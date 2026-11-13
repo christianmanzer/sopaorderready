@@ -29,7 +29,7 @@ new_sqlite_classes = ["Board", "EventLog"]
 
 [vars]
 # Minutes a ready number stays on the screen.
-READY_MINUTES = "15"
+READY_MINUTES = "30"
 # Minutes before an order that was never marked ready is dropped.
 PREP_MINUTES = "90"
 # Change this number after a deploy and every open board reloads itself.
@@ -45,6 +45,8 @@ SIGNATURE_MODE = "enforce"
 #                        orders that are not table orders.
 #   includeTableOrders   optional. true shows dine-in table orders too.
 #   showNames            optional. true shows the guest's first name under the number.
+#   showEstimate         optional. true shows Toast's estimated ready time on the
+#                        Preparing tiles ("Est. 12:25") when the order has one.
 #   timezone             optional. Time zone for the "Updated" time on the screen.
 #                        Default America/Denver.
 #   theme                optional. Colors, see README.
@@ -52,6 +54,7 @@ SIGNATURE_MODE = "enforce"
 name = "SOPA!"
 restaurantGuid = "55dc2d61-38be-496d-aa0e-183954171d1f"
 showNames = true
+showEstimate = true
 timezone = "America/Denver"
 
 # SOPA! brand: cream #faf6ee, green #80af60, pink #e87a96, text #2e2a26

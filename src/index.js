@@ -136,6 +136,7 @@ async function handleWebhook(request, env) {
       diningOptionGuids: loc.diningOptionGuids || [],
       includeTableOrders: !!loc.includeTableOrders,
       showNames: !!loc.showNames,
+      showEstimates: !!loc.showEstimate,
       nowMs,
     });
     try {
@@ -158,6 +159,7 @@ async function handleWebhook(request, env) {
       action: result.action + ': ' + result.reason,
       statuses: counts,
       nameFound: result.nameSource || null,
+      etaFound: result.etaSource || null,
       diningOption: (order.diningOption && order.diningOption.guid) || null,
       tableOrder: !!order.table,
       source: order.source || null,
@@ -209,6 +211,7 @@ export default {
             name: loc.name || slug,
             theme: loc.theme || {},
             showNames: !!loc.showNames,
+            showEstimate: !!loc.showEstimate,
             timezone: loc.timezone || 'America/Denver',
             appVersion: String(env.APP_VERSION || '1'),
           });

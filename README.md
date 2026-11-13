@@ -26,7 +26,7 @@ Toast tracks a status on every item in an order (`fulfillmentStatus`):
 | READY | Marked ready on the KDS | Ready for pickup, once nothing is still SENT |
 
 Also: voided orders disappear, dine-in table orders are skipped, a ready number
-stays up for 15 minutes, and an order nobody ever marks ready drops off after 90
+stays up for 30 minutes, and an order nobody ever marks ready drops off after 90
 minutes. Both limits are in `wrangler.toml`.
 
 **Important:** Toast only sets READY when the restaurant uses the Toast kitchen
@@ -39,21 +39,34 @@ stay in Preparing. Step 5 below checks this before you rely on the board.
 
 Push this folder to a GitHub repo, then in Cloudflare go to Workers & Pages,
 Create, Import a repository. Or from this folder: `npm install` then
-`npx wrangler deploy`. You get a URL like `https://order-board.<you>.workers.dev`.
+`npx wrangler deploy`. You get a URL like `https://sopaorderready.<you>.workers.dev`.
 To use your own address (for example `board.fivem.group`), add a custom domain
 to the Worker in its Settings.
 
 ### 2. Add the admin key
 
-In the Worker's Settings, Variables and Secrets, add a secret named `ADMIN_KEY`
-with any long random value. It protects the setup log in step 4.
+Secrets reach the Worker through `secrets.env` in this folder, which holds
+names only (never real values). The real value lives in Cloudflare:
+
+1. Worker, Settings, **Builds**, **Variables and secrets**, Add: type **Secret**,
+   name `ADMIN_KEY`, value any long random string. It protects the setup log in
+   step 4.
+2. Worker, Settings, **Builds**, **Deploy command**: change it to
+   `npx wrangler deploy --secrets-file secrets.env`.
+3. Push any change to GitHub (or retry the latest build). Each deploy then
+   uploads the secrets named in `secrets.env` to the running Worker.
+
+(If your dashboard offers Settings, Variables and Secrets for the running
+Worker, adding the secret there works too.)
 
 ### 3. Create the Toast webhook
 
 In Toast Web: Integrations, Toast API access, Manage webhooks. Create a
 subscription for the **orders** event category and set the endpoint to
 `https://YOUR-WORKER-URL/webhook/toast`. Toast shows a secret key for the
-subscription. Add it to the Worker as a secret named `TOAST_WEBHOOK_SECRET`.
+subscription. Add it the same way as `ADMIN_KEY` in step 2: a build secret named
+`TOAST_WEBHOOK_SECRET`, plus a new line `TOAST_WEBHOOK_SECRET=$TOAST_WEBHOOK_SECRET`
+in `secrets.env`. Only add that line once the build secret exists.
 (Several subscriptions? Use `TOAST_WEBHOOK_SECRETS` with the secrets separated
 by commas.)
 
@@ -99,7 +112,7 @@ every screen without touching them).
 ## Preview and testing
 
 - **See the design right now, no setup:** open `public/board.html?demo=1` in any
-  browser. Add `&names=1` to see name labels.
+  browser. Add `&names=1` to see name labels and `&est=1` to see estimated times.
 - **Run it locally:** `npm install`, copy `.dev.vars.example` to `.dev.vars`,
   `npm run dev`, then open `http://localhost:8787/sopa/orderready`.
 - **Send fake orders:** `npm run simulate -- --status preparing --number 42`.
@@ -113,12 +126,13 @@ every screen without touching them).
 
 | Setting | What it does |
 |---|---|
-| `READY_MINUTES` | How long a ready number stays up (15) |
+| `READY_MINUTES` | How long a ready number stays up (30) |
 | `PREP_MINUTES` | When a never-bumped order drops off (90) |
 | `APP_VERSION` | Change it and redeploy to reload every open board |
 | `diningOptionGuids` | Only show these dining options |
 | `includeTableOrders` | `true` shows dine-in table orders |
 | `showNames` | `true` shows each guest's first name under the number (on for SOPA). See Names |
+| `showEstimate` | `true` shows Toast's estimated ready time on Preparing tiles ("Est. 12:25") when the order has one (on for SOPA). See Estimated time |
 | `timezone` | Time zone for the "Updated" time (default `America/Denver`) |
 | `theme` | Colors. Defaults are the SOPA! brand colors (cream `#faf6ee`, green `#80af60`, pink `#e87a96`). Override with, for example, `theme = { ready = "#80af60", background = "#faf6ee" }`. Keys: `background`, `ready`, `readyInk`, `preparing`, `muted`, `accent` (the offline notice), `readyChip`, `readyChipInk`, `preparingChip`, `preparingChipInk` (the order tiles and their text) |
 
@@ -149,6 +163,26 @@ on orders where staff did type a name, the name is stored somewhere else in your
 Toast setup (for example only on the customer record). Tell me what you see and
 we will decide whether the extra scope is worth it. Set `showNames = false` to
 turn names off.
+
+## Estimated time
+
+With `showEstimate = true`, Preparing tiles show "Est. 12:25" when Toast gives
+the order an expected ready time. The board reads `estimatedFulfillmentDate`
+from the order, which Toast calculates from when the order opened plus the
+location's prep time, and falls back to `promisedDate` (the scheduled time on
+future orders). Anything more than 12 hours away is ignored. An order with no
+estimate just shows its number and name.
+
+**Check it with a real order:** in `/admin/recent`, `etaFound` says `"estimated"`,
+`"promised"` or `null`. If it is `null` on real orders, Toast is not sending an
+estimate for them. The prep time comes from the takeout prep time in Toast's
+restaurant settings, so changing it there changes what the board shows.
+
+## Tile size
+
+Tiles are capped at half the panel width and about 40% of its height, so one or
+two orders stay a normal size instead of filling the panel. They fill from the
+top left, and the numbers grow as orders are added until the panel is full.
 
 ## Reliability and security
 
@@ -183,7 +217,7 @@ turn names off.
 | `rejected: bad signature` | The secret is for a different subscription or environment, or Toast's signing details differ from the docs. Set `SIGNATURE_MODE` to `log-only`, send one order, and read `sigOk` in the log. If it is still false with the right secret, the signature input needs adjusting in `src/signature.js`. |
 | Orders appear but never move to Ready | Items are not reaching READY in Toast (see step 5). |
 | Wrong orders appear | Use `diningOptionGuids` (step 5). |
-| Two screens show the same number | Toast's order numbers restart daily and are not guaranteed unique. Rare inside a 15 minute window. |
+| Two screens show the same number | Toast's order numbers restart daily and are not guaranteed unique. Rare inside a 30 minute window. |
 | "Not live" on the TV | The TV lost internet or the Worker is down. The board recovers on its own. |
 
 ## Not included yet

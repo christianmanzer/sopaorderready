@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { summarizeOrder, applyEvent, pruneOrders, visibleOrders, parseMs, cleanName, findName, DEFAULTS } from '../src/logic.js';
+import { summarizeOrder, applyEvent, pruneOrders, visibleOrders, parseMs, cleanName, findName, findEta, DEFAULTS } from '../src/logic.js';
 import { verifyToastSignature } from '../src/signature.js';
 
 const NOW = Date.parse('2026-11-13T18:00:00.000Z');
@@ -196,4 +196,27 @@ test('names: an order whose name changes updates the board', () => {
   o.checks[0].tabName = 'Ben';
   assert.equal(applyEvent(orders, 'o1', show(o, { showNames: true }), NOW + 1000, NOW + 1000), true);
   assert.equal(visibleOrders(orders)[0].name, 'Ben');
+});
+
+test('findEta prefers estimatedFulfillmentDate, falls back to promisedDate, ignores bad data', () => {
+  const soon = NOW + 12 * 60 * 1000;
+  assert.deepEqual(findEta({ estimatedFulfillmentDate: iso(soon) }, NOW), { ms: soon, source: 'estimated' });
+  assert.deepEqual(findEta({ promisedDate: iso(soon) }, NOW), { ms: soon, source: 'promised' });
+  assert.equal(findEta({ estimatedFulfillmentDate: iso(soon), promisedDate: iso(soon + 60000) }, NOW).source, 'estimated');
+  assert.equal(findEta({ estimatedFulfillmentDate: iso(NOW + 30 * 3600 * 1000) }, NOW).ms, null);
+  assert.equal(findEta({}, NOW).ms, null);
+  assert.equal(findEta({ estimatedFulfillmentDate: 'garbage' }, NOW).ms, null);
+});
+
+test('estimate is only carried to the board when showEstimates is on, and survives storage', () => {
+  const soon = NOW + 10 * 60 * 1000;
+  const o = order(['SENT'], { estimatedFulfillmentDate: iso(soon) });
+  const off = summarizeOrder(o, { nowMs: NOW });
+  assert.equal(off.order.eta, null);
+  assert.equal(off.etaSource, 'estimated'); // still reported for the setup log
+  const on = summarizeOrder(o, { nowMs: NOW, showEstimates: true });
+  assert.equal(on.order.eta, soon);
+  const orders = {};
+  applyEvent(orders, 'o1', on, NOW, NOW);
+  assert.equal(visibleOrders(orders, NOW)[0].e, soon);
 });

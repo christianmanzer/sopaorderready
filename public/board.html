@@ -45,7 +45,7 @@
   .area { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; }
   .grid { position: absolute; left: 0; top: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; align-content: flex-start; }
 
-  .cell { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0.6vh; min-width: 0; overflow: hidden; }
+  .cell { display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; padding: 0.6vh; min-width: 0; overflow: hidden; }
   .chip {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     width: 100%; height: 100%; min-width: 0; border-radius: 1.6vh; overflow: hidden;
@@ -53,6 +53,7 @@
   .ready .chip { background: var(--chip-ready); color: var(--chip-ready-ink); }
   .prep .chip { background: var(--chip-prep); color: var(--chip-prep-ink); }
   .num { font-weight: 900; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .est { font-weight: 700; line-height: 1.1; margin-top: 0.3em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 96%; opacity: 0.8; }
   .nm { font-weight: 700; line-height: 1.1; margin-top: 0.12em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 96%; }
 
 
@@ -104,7 +105,7 @@
   var params = new URLSearchParams(location.search);
   var DEMO = params.get('demo') === '1';
 
-  var cfg = { name: '', theme: {}, showNames: params.get('names') === '1', appVersion: null, timezone: '' };
+  var cfg = { name: '', theme: {}, showNames: params.get('names') === '1', showEstimate: params.get('est') === '1', appVersion: null, timezone: '' };
   var orders = [];
   var lastGoodAt = Date.now(); // last time we heard from the server
   var ws = null;
@@ -115,7 +116,13 @@
   function $(id) { return document.getElementById(id); }
 
   // ----- layout: pick the column count that gives the biggest numbers ------
-  function bestLayout(W, H, n, maxLen, hasName) {
+  // A tile never grows past CAP_W of the panel width or CAP_H of its height, so
+  // one or two orders stay a sensible size instead of filling the whole panel.
+  var CAP_W = 0.5;
+  var CAP_H = 0.42;
+  var LINE_FACTOR = [0.68, 0.52, 0.44]; // number height per extra label line (name, estimate)
+
+  function bestLayout(W, H, n, maxLen, lines) {
     var best = null;
     for (var c = 1; c <= n; c++) {
       var r = Math.ceil(n / c);
@@ -123,10 +130,13 @@
       // wrap to a new row when the browser rounds the panel width down.
       var cw = Math.floor((W - 4) / c);
       var ch = Math.floor((H - 4) / r);
-      var byHeight = ch * (hasName ? 0.52 : 0.68);
-      var byWidth = (cw * 0.9) / (Math.max(maxLen, 2) * 0.58);
+      var ew = Math.min(cw, Math.floor(W * CAP_W));
+      var eh = Math.min(ch, Math.floor(H * CAP_H));
+      var byHeight = eh * LINE_FACTOR[Math.min(lines, 2)];
+      var byWidth = (ew * 0.9) / (Math.max(maxLen, 2) * 0.58);
       var fs = Math.min(byHeight, byWidth, H * 0.5);
-      if (!best || fs > best.fs) best = { c: c, r: r, cw: cw, ch: ch, fs: fs };
+      // On a tie (the cap is limiting), prefer more columns.
+      if (!best || fs >= best.fs - 0.01) best = { c: c, r: r, cw: cw, ch: ch, ew: ew, eh: eh, fs: fs };
     }
     return best;
   }
@@ -151,9 +161,10 @@
       var result;
       for (;;) {
         var slice = list.slice(0, n);
-        var named = slice.some(function (o) { return !!o.name; });
+        var lines = (slice.some(function (o) { return !!o.name; }) ? 1 : 0) +
+          (kind === 'prep' && cfg.showEstimate && slice.some(function (o) { return !!o.e; }) ? 1 : 0);
         var len = slice.reduce(function (m, o) { return Math.max(m, String(o.n).length); }, 1);
-        result = bestLayout(W, height, n, len, named);
+        result = bestLayout(W, height, n, len, lines);
         if (result.fs >= minFont || n <= 1) break;
         n--;
       }
@@ -172,6 +183,13 @@
     var shown = f.n;
     var lay = f.lay;
 
+    // If any tile in the panel has a name (or estimate), every tile reserves that
+    // line, so the big numbers line up across tiles instead of sitting at
+    // different heights.
+    var shownList = list.slice(0, shown);
+    var anyName = shownList.some(function (o) { return !!o.name; });
+    var anyEst = kind === 'prep' && cfg.showEstimate && shownList.some(function (o) { return !!o.e; });
+
     var frag = document.createDocumentFragment();
     for (var i = 0; i < shown; i++) {
       var o = list[i];
@@ -181,17 +199,26 @@
       cell.style.height = lay.ch + 'px';
       var chip = document.createElement('div');
       chip.className = 'chip';
+      chip.style.maxWidth = lay.ew + 'px';
+      chip.style.maxHeight = lay.eh + 'px';
       var num = document.createElement('span');
       num.className = 'num';
       num.style.fontSize = lay.fs + 'px';
       num.textContent = o.n;
       chip.appendChild(num);
-      if (o.name) {
+      if (anyName) {
         var nm = document.createElement('span');
         nm.className = 'nm';
         nm.style.fontSize = lay.fs * 0.3 + 'px';
-        nm.textContent = o.name;
+        nm.textContent = o.name || '\u00a0';
         chip.appendChild(nm);
+      }
+      if (anyEst) {
+        var est = document.createElement('span');
+        est.className = 'est';
+        est.style.fontSize = Math.min(lay.fs * 0.24, lay.ew * 0.11) + 'px';
+        est.textContent = o.e ? 'Est. ' + clockText(o.e).replace(/\s?[AP]M$/i, '') : '\u00a0';
+        chip.appendChild(est);
       }
       cell.appendChild(chip);
       frag.appendChild(cell);
@@ -203,13 +230,14 @@
     var nums = grid.getElementsByClassName('num');
     var widest = 0;
     for (var k = 0; k < nums.length; k++) widest = Math.max(widest, nums[k].scrollWidth);
-    var target = lay.cw * 0.82;
+    var target = lay.ew * 0.82;
     if (widest > target) {
       var scale = target / widest;
       for (var q = 0; q < nums.length; q++) {
         nums[q].style.fontSize = lay.fs * scale + 'px';
-        var label = nums[q].nextSibling;
-        if (label) label.style.fontSize = lay.fs * scale * 0.3 + 'px';
+        for (var lb = nums[q].nextSibling; lb; lb = lb.nextSibling) {
+          lb.style.fontSize = parseFloat(lb.style.fontSize) * scale + 'px';
+        }
       }
     }
   }
@@ -307,7 +335,8 @@
       var now = Date.now();
       list.push({
         n: String(next++), s: status, name: cfg.showNames ? ['Maria', 'Ben', 'Tomas', 'Priya', 'Sam', 'Lena'][next % 6] : null,
-        o: now - ageSec * 1000, r: status === 'ready' ? now : null
+        o: now - ageSec * 1000, r: status === 'ready' ? now : null,
+        e: status === 'preparing' ? now + (600 - ageSec) * 1000 : null
       });
     }
     add('ready', 120); add('ready', 90); add('preparing', 70); add('preparing', 50); add('preparing', 20);
@@ -392,6 +421,7 @@
           var c = JSON.parse(x.responseText);
           cfg.name = c.name; cfg.theme = c.theme || {}; cfg.appVersion = c.appVersion; cfg.timezone = c.timezone || '';
           if (c.showNames) cfg.showNames = true;
+          if (c.showEstimate) cfg.showEstimate = true;
         } catch (e) {}
         start();
       } else { setTimeout(loadConfig, 5000); }

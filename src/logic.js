@@ -94,12 +94,26 @@ export function findName(order) {
   return { name: null, source: null };
 }
 
+// When Toast expects the order to be ready. estimatedFulfillmentDate is set by
+// Toast (opened time plus prep time, plus throttling for takeout); promisedDate
+// is the scheduled time for future orders. Returns { ms, source } where source
+// is 'estimated' | 'promised' | null. Anything more than 12 hours from now is
+// treated as bad data.
+export function findEta(order, nowMs) {
+  var cands = [['estimated', order && order.estimatedFulfillmentDate], ['promised', order && order.promisedDate]];
+  for (var i = 0; i < cands.length; i++) {
+    var ms = parseMs(cands[i][1]);
+    if (ms !== null && Math.abs(ms - nowMs) <= 12 * 60 * MIN) return { ms: ms, source: cands[i][0] };
+  }
+  return { ms: null, source: null };
+}
+
 // Turn a Toast Order object into an instruction for the board:
-//   { action: 'show',   order: { number, status, name }, reason }
+//   { action: 'show',   order: { number, status, name, eta }, reason }
 //   { action: 'remove', reason }   make sure it is not on the board
 //   { action: 'ignore', reason }   change nothing
 // opts: { diningOptionGuids: [], includeTableOrders: false, showNames: false,
-//         nowMs, maxFiredAgeMs }
+//         showEstimates: false, nowMs, maxFiredAgeMs }
 export function summarizeOrder(order, opts) {
   opts = opts || {};
   if (!order || !order.guid) return { action: 'ignore', reason: 'no-order' };
@@ -133,21 +147,24 @@ export function summarizeOrder(order, opts) {
 
   var status = info.counts.SENT > 0 ? 'preparing' : 'ready';
   var found = findName(order);
+  var eta = findEta(order, nowMs);
   return {
     action: 'show',
     reason: status,
     nameSource: found.source, // for the setup log only; the name itself is never logged
+    etaSource: eta.source,
     order: {
       number: String(number).slice(0, 8),
       status: status,
       name: opts.showNames ? found.name : null,
+      eta: opts.showEstimates ? eta.ms : null,
     },
   };
 }
 
 // Apply one summarized event to the stored orders map. Returns true when the
 // visible board changed. Stored shape per order:
-//   { n, s: 'preparing'|'ready'|'gone', name, o: openedMs, r: readyMs, ts, g: goneMs }
+//   { n, s: 'preparing'|'ready'|'gone', name, e: estimatedReadyMs, o: openedMs, r: readyMs, ts, g: goneMs }
 export function applyEvent(orders, orderGuid, result, eventTs, nowMs) {
   var cur = orders[orderGuid];
   // A retried webhook can arrive minutes late carrying older state. Never go backwards.
@@ -171,13 +188,14 @@ export function applyEvent(orders, orderGuid, result, eventTs, nowMs) {
     n: o.number,
     s: o.status,
     name: o.name || null,
+    e: o.eta || null,
     o: cur && cur.s !== 'gone' ? cur.o : nowMs,
     r: null,
     ts: eventTs || nowMs,
   };
   if (o.status === 'ready') next.r = cur && cur.s === 'ready' ? cur.r : nowMs;
 
-  var changed = !cur || cur.s === 'gone' || cur.n !== next.n || cur.s !== next.s || cur.name !== next.name;
+  var changed = !cur || cur.s === 'gone' || cur.n !== next.n || cur.s !== next.s || cur.name !== next.name || cur.e !== next.e;
   orders[orderGuid] = next;
   return changed;
 }
@@ -212,7 +230,7 @@ export function visibleOrders(orders) {
   for (var i = 0; i < guids.length; i++) {
     var o = orders[guids[i]];
     if (o.s === 'preparing' || o.s === 'ready') {
-      out.push({ n: o.n, s: o.s, name: o.name || null, o: o.o, r: o.r });
+      out.push({ n: o.n, s: o.s, name: o.name || null, e: o.e || null, o: o.o, r: o.r });
     }
   }
   return out;
