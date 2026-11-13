@@ -16,6 +16,7 @@ export var DEFAULTS = {
   readyMs: 15 * MIN, // how long a ready number stays on the board
   prepMs: 90 * MIN, // a never-bumped order drops off after this long
   goneMs: 6 * 60 * MIN, // how long we remember removed orders (blocks stale retries)
+  mixedMs: 3 * MIN, // some items READY and the rest stuck at SENT (e.g. a drink that never goes through the KDS): show as ready after this long
   maxFiredAgeMs: 3 * 60 * MIN, // ignore orders whose items were last fired longer ago than this
 };
 
@@ -156,6 +157,7 @@ export function summarizeOrder(order, opts) {
     order: {
       number: String(number).slice(0, 8),
       status: status,
+      mixed: info.counts.SENT > 0 && info.counts.READY > 0,
       name: opts.showNames ? found.name : null,
       eta: opts.showEstimates ? eta.ms : null,
     },
@@ -194,6 +196,13 @@ export function applyEvent(orders, orderGuid, result, eventTs, nowMs) {
     ts: eventTs || nowMs,
   };
   if (o.status === 'ready') next.r = cur && cur.s === 'ready' ? cur.r : nowMs;
+  // Some items READY, the rest still SENT. Remember when that started so
+  // pruneOrders can promote it to ready if it stays that way (see mixedMs).
+  if (o.mixed) {
+    next.m = cur && cur.m ? cur.m : nowMs;
+    // Already promoted to ready: repeat events with the same mixed state must not undo it.
+    if (cur && cur.s === 'ready' && cur.m) { next.s = 'ready'; next.r = cur.r; }
+  }
 
   var changed = !cur || cur.s === 'gone' || cur.n !== next.n || cur.s !== next.s || cur.name !== next.name || cur.e !== next.e;
   orders[orderGuid] = next;
@@ -206,6 +215,7 @@ export function pruneOrders(orders, nowMs, limits) {
   var readyMs = limits.readyMs || DEFAULTS.readyMs;
   var prepMs = limits.prepMs || DEFAULTS.prepMs;
   var goneMs = limits.goneMs || DEFAULTS.goneMs;
+  var mixedMs = limits.mixedMs || DEFAULTS.mixedMs;
   var changed = false;
   var guids = Object.keys(orders);
   for (var i = 0; i < guids.length; i++) {
@@ -213,6 +223,10 @@ export function pruneOrders(orders, nowMs, limits) {
     var o = orders[guid];
     if (o.s === 'ready' && nowMs - o.r > readyMs) {
       orders[guid] = { s: 'gone', ts: o.ts, g: nowMs };
+      changed = true;
+    } else if (o.s === 'preparing' && o.m && nowMs - o.m >= mixedMs) {
+      o.s = 'ready';
+      o.r = nowMs;
       changed = true;
     } else if (o.s === 'preparing' && nowMs - o.o > prepMs) {
       orders[guid] = { s: 'gone', ts: o.ts, g: nowMs };

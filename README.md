@@ -29,6 +29,14 @@ Also: voided orders disappear, dine-in table orders are skipped, a ready number
 stays up for 30 minutes, and an order nobody ever marks ready drops off after 60
 minutes. Both limits are in `wrangler.toml`.
 
+An order where some items are READY and the rest never leave SENT (typically an
+item that does not go through the KDS) moves to Ready after 3 minutes.
+
+**Not visible to the board:** pressing **Order Ready** by hand in Toast's Orders
+Hub moves an order to Ready on Toast's own board, but Toast does not send that
+as an order change, so this board cannot see it. Bump tickets on the KDS instead
+(see below). Orders nobody bumps drop off after the 60 minute limit.
+
 **Important:** Toast only sets READY when the restaurant uses the Toast kitchen
 display (KDS) and staff bump orders on it. If tickets are never bumped, orders
 stay in Preparing. Step 5 below checks this before you rely on the board.
@@ -128,6 +136,7 @@ every screen without touching them).
 |---|---|
 | `READY_MINUTES` | How long a ready number stays up (30) |
 | `PREP_MINUTES` | When a never-bumped order drops off (60) |
+| `MIXED_READY_MINUTES` | An order with some items READY and the rest stuck at SENT (for example a drink that never goes through the KDS) shows as ready after this long (3) |
 | `APP_VERSION` | Change it and redeploy to reload every open board |
 | `diningOptionGuids` | Only show these dining options |
 | `includeTableOrders` | `true` shows dine-in table orders |
@@ -229,9 +238,25 @@ top left, and the numbers grow as orders are added until the panel is full.
 | Two screens show the same number | Toast's order numbers restart daily and are not guaranteed unique. Rare inside a 30 minute window. |
 | "Not live" on the TV | The TV lost internet or the Worker is down. The board recovers on its own. |
 
-## Not included yet
+## Backup check against Toast (optional)
 
-- A backup poll of Toast's orders API to catch a webhook that Toast gave up on
-  after its two retries. It needs the Toast API client credentials and is the
-  natural next addition.
+If an order's last webhook never arrives, the board would show it as Preparing
+until the 60 minute limit. With the Toast API credentials set, the board asks
+Toast directly about any order that has been Preparing for a couple of minutes
+(about once a minute per order, a handful of read-only calls) and updates it if
+Toast's data says otherwise. It is off until both secrets exist.
+
+1. Toast Web, Integrations, Toast API access, Manage credentials, open the
+   "SOPA Order Board" credentials. Copy the **Client ID** and **Client secret**.
+2. Cloudflare, Worker, Settings, Builds, Variables and secrets: add two
+   **Secrets**, `TOAST_CLIENT_ID` and `TOAST_CLIENT_SECRET`.
+3. Only after both exist, add these two lines to `secrets.env` and push:
+   `TOAST_CLIENT_ID=$TOAST_CLIENT_ID` and `TOAST_CLIENT_SECRET=$TOAST_CLIENT_SECRET`
+4. In `/admin/recent`, a corrected order shows as `poll: preparing -> ready`.
+   A problem shows as `poll error: ...` (at most once every 10 minutes).
+
+It reads only. If Toast's own data still says SENT, the check changes nothing;
+the log is how you find out.
+
+## Not included yet
 - Sound when an order turns ready (browsers need a tap before they allow audio).

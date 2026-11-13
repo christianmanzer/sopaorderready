@@ -32,6 +32,9 @@ new_sqlite_classes = ["Board", "EventLog"]
 READY_MINUTES = "30"
 # Minutes before an order that was never marked ready is dropped.
 PREP_MINUTES = "60"
+# An order with some items READY and the rest stuck at SENT (for example a drink that
+# never goes through the KDS) shows as ready after this many minutes.
+MIXED_READY_MINUTES = "3"
 # Change this number after a deploy and every open board reloads itself.
 APP_VERSION = "1"
 # "enforce" rejects anything without a valid Toast signature.

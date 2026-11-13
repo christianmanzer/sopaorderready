@@ -220,3 +220,35 @@ test('estimate is only carried to the board when showEstimates is on, and surviv
   applyEvent(orders, 'o1', on, NOW, NOW);
   assert.equal(visibleOrders(orders, NOW)[0].e, soon);
 });
+
+test('mixed READY and SENT order is promoted to ready after mixedMs, and stays ready on repeat events', () => {
+  const o = order(['READY', 'READY', 'SENT']);
+  const r = summarizeOrder(o, { nowMs: NOW });
+  assert.equal(r.order.status, 'preparing');
+  assert.equal(r.order.mixed, true);
+  const orders = {};
+  applyEvent(orders, 'o1', r, NOW, NOW);
+  assert.equal(orders.o1.m, NOW);
+  // not yet
+  assert.equal(pruneOrders(orders, NOW + 2 * 60000, { mixedMs: 3 * 60000 }), false);
+  assert.equal(visibleOrders(orders)[0].s, 'preparing');
+  // promoted
+  assert.equal(pruneOrders(orders, NOW + 3 * 60000, { mixedMs: 3 * 60000 }), true);
+  assert.equal(visibleOrders(orders)[0].s, 'ready');
+  const readyAt = orders.o1.r;
+  // Toast repeats the same mixed state: must stay ready, with the original ready time
+  applyEvent(orders, 'o1', r, NOW + 4 * 60000, NOW + 4 * 60000);
+  assert.equal(orders.o1.s, 'ready');
+  assert.equal(orders.o1.r, readyAt);
+  // a new item is added (all SENT again): back to preparing
+  const r2 = summarizeOrder(order(['SENT', 'SENT', 'SENT']), { nowMs: NOW });
+  assert.equal(r2.order.mixed, false);
+  applyEvent(orders, 'o1', r2, NOW + 5 * 60000, NOW + 5 * 60000);
+  assert.equal(orders.o1.s, 'preparing');
+  assert.equal(orders.o1.m, undefined);
+});
+
+test('an order that is all SENT or all READY is never marked mixed', () => {
+  assert.equal(summarizeOrder(order(['SENT', 'SENT']), { nowMs: NOW }).order.mixed, false);
+  assert.equal(summarizeOrder(order(['READY', 'READY']), { nowMs: NOW }).order.mixed, false);
+});

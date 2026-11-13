@@ -1,8 +1,12 @@
 import { DurableObject } from 'cloudflare:workers';
-import { DEFAULTS, summarizeOrder, applyEvent, pruneOrders, visibleOrders } from './logic.js';
+import { DEFAULTS, summarizeOrder, applyEvent, pruneOrders, visibleOrders, inspectSelections } from './logic.js';
+import { pollingEnabled, getToken, fetchOrder } from './toast.js';
 import { verifyToastSignature } from './signature.js';
 
 const MINUTE = 60 * 1000;
+const POLL_EVERY_MS = 60 * 1000; // ask Toast about one order at most this often
+const POLL_AFTER_MS = 90 * 1000; // leave a brand-new order alone for this long
+const POLL_MAX_PER_RUN = 6;
 
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
@@ -16,6 +20,7 @@ function limitsFor(env) {
     readyMs: (Number(env.READY_MINUTES) || 15) * MINUTE,
     prepMs: (Number(env.PREP_MINUTES) || 90) * MINUTE,
     goneMs: DEFAULTS.goneMs,
+    mixedMs: (Number(env.MIXED_READY_MINUTES) || 3) * MINUTE,
   };
 }
 
@@ -132,27 +137,37 @@ async function handleWebhook(request, env) {
   let failed = false;
   for (const slug of slugs) {
     const loc = locations[slug];
-    const result = summarizeOrder(order, {
-      diningOptionGuids: loc.diningOptionGuids || [],
-      includeTableOrders: !!loc.includeTableOrders,
-      showNames: !!loc.showNames,
-      showEstimates: !!loc.showEstimate,
-      nowMs,
-    });
+    let result;
+    try {
+      result = summarizeOrder(order, {
+        diningOptionGuids: loc.diningOptionGuids || [],
+        includeTableOrders: !!loc.includeTableOrders,
+        showNames: !!loc.showNames,
+        showEstimates: !!loc.showEstimate,
+        nowMs,
+      });
+    } catch (err) {
+      // Leave a trace in the setup log instead of failing silently.
+      await logEvent(env, Object.assign({}, base, { board: slug, action: 'error: ' + String(err && err.message).slice(0, 120) }));
+      failed = true;
+      continue;
+    }
     try {
       await boardStub(env, slug).fetch('https://board/event', {
         method: 'POST',
-        body: JSON.stringify({ eventGuid: body.guid || null, orderGuid: order.guid, result, ts: eventTs }),
+        body: JSON.stringify({ eventGuid: body.guid || null, orderGuid: order.guid, result, ts: eventTs, slug, restaurantGuid }),
       });
     } catch (err) {
       failed = true;
       console.error('board update failed', err && err.message);
     }
-    const counts = {};
-    ((order.checks || [])[0] || { selections: [] }).selections.forEach((s) => {
-      const k = s.fulfillmentStatus || 'NEW';
-      counts[k] = (counts[k] || 0) + 1;
-    });
+    let counts = {};
+    try {
+      const c = inspectSelections(order).counts;
+      Object.keys(c).forEach((k) => { if (c[k]) counts[k] = c[k]; });
+    } catch (e) {
+      counts = { error: 'unreadable' };
+    }
     await logEvent(env, Object.assign({}, base, {
       board: slug,
       number: result.order ? result.order.number : order.displayNumber || null,
@@ -163,6 +178,7 @@ async function handleWebhook(request, env) {
       diningOption: (order.diningOption && order.diningOption.guid) || null,
       tableOrder: !!order.table,
       source: order.source || null,
+      toastTime: body.timestamp || null,
     }));
   }
   // A 5xx makes Toast resend later; the board ignores older state on retry.
@@ -232,6 +248,10 @@ export default {
       return env.ASSETS.fetch(request);
     } catch (err) {
       console.error('request failed', err && err.stack);
+      // A webhook that crashes the Worker used to leave no trace at all.
+      if (path === '/webhook/toast') {
+        await logEvent(env, { t: new Date().toISOString(), type: 'worker', action: 'server error: ' + String(err && err.message).slice(0, 160) });
+      }
       return json({ error: 'server error' }, 500);
     }
   },
@@ -305,6 +325,7 @@ export class Board extends DurableObject {
         return json({ ok: true, duplicate: true });
       }
       const nowMs = Date.now();
+      if (evt.slug && evt.restaurantGuid) await this.ctx.storage.put('meta', { slug: evt.slug, restaurantGuid: evt.restaurantGuid });
       let changed = applyEvent(orders, evt.orderGuid, evt.result, evt.ts, nowMs);
       if (pruneOrders(orders, nowMs, limitsFor(this.env))) changed = true;
       if (evt.eventGuid) {
@@ -324,10 +345,75 @@ export class Board extends DurableObject {
   async alarm() {
     const nowMs = Date.now();
     const { orders } = await this.load();
-    const changed = pruneOrders(orders, nowMs, limitsFor(this.env));
+    let changed = pruneOrders(orders, nowMs, limitsFor(this.env));
+    try {
+      if (await this.pollToast(orders, nowMs)) changed = true;
+    } catch (err) {
+      console.error('poll failed', err && err.message);
+    }
     await this.ctx.storage.put('orders', orders);
     if (changed) await this.broadcast();
     await this.scheduleSweep(orders);
+  }
+
+  // Safety net: ask Toast directly about orders still showing as Preparing, in
+  // case the webhook for a later change never arrived. Only runs when the Toast
+  // API client ID and secret are set. Read-only; at most a few calls per run.
+  async pollToast(orders, nowMs) {
+    if (!pollingEnabled(this.env)) return false;
+    const meta = await this.ctx.storage.get('meta');
+    const loc = meta && getLocation(this.env, meta.slug);
+    if (!loc) return false;
+
+    const due = Object.keys(orders)
+      .filter((g) => {
+        const o = orders[g];
+        return o.s === 'preparing' && nowMs - (o.lp || o.ts || o.o) >= POLL_EVERY_MS && nowMs - o.o >= POLL_AFTER_MS;
+      })
+      .slice(0, POLL_MAX_PER_RUN);
+    if (!due.length) return false;
+
+    let changed = false;
+    try {
+      const tok = await getToken(this.env, await this.ctx.storage.get('toastToken'), nowMs);
+      await this.ctx.storage.put('toastToken', tok);
+      for (const guid of due) {
+        const before = orders[guid];
+        const order = await fetchOrder(this.env, tok.token, meta.restaurantGuid, guid);
+        if (!order) { before.lp = nowMs; continue; }
+        const result = summarizeOrder(order, {
+          diningOptionGuids: loc.diningOptionGuids || [],
+          includeTableOrders: !!loc.includeTableOrders,
+          showNames: !!loc.showNames,
+          showEstimates: !!loc.showEstimate,
+          nowMs,
+        });
+        const prevStatus = before.s;
+        const c = applyEvent(orders, guid, result, nowMs, nowMs);
+        if (orders[guid]) orders[guid].lp = nowMs;
+        if (c) {
+          changed = true;
+          await logEvent(this.env, {
+            t: new Date(nowMs).toISOString(),
+            type: 'poll',
+            board: meta.slug,
+            order: guid.slice(0, 8),
+            number: before.n,
+            action: 'poll: ' + prevStatus + ' -> ' + (orders[guid] ? orders[guid].s : 'gone') + ' (' + result.action + ': ' + (result.reason || '') + ')',
+            statuses: Object.fromEntries(Object.entries(inspectSelections(order).counts).filter(([, n]) => n)),
+          });
+        }
+      }
+      await this.ctx.storage.delete('pollErrAt');
+    } catch (err) {
+      // Log a failure at most every 10 minutes so the setup log stays readable.
+      const lastErr = (await this.ctx.storage.get('pollErrAt')) || 0;
+      if (nowMs - lastErr > 10 * MINUTE) {
+        await this.ctx.storage.put('pollErrAt', nowMs);
+        await logEvent(this.env, { t: new Date(nowMs).toISOString(), type: 'poll', board: meta.slug, action: 'poll error: ' + String(err && err.message).slice(0, 120) });
+      }
+    }
+    return changed;
   }
 
   async webSocketMessage(ws, message) {
@@ -346,7 +432,7 @@ export class Board extends DurableObject {
 }
 
 // ---------------------------------------------------------------------------
-// EventLog: the last 40 webhooks, for checking setup. No guest names stored.
+// EventLog: the last 100 webhooks, for checking setup. No guest names stored.
 // ---------------------------------------------------------------------------
 export class EventLog extends DurableObject {
   async fetch(request) {
@@ -354,7 +440,7 @@ export class EventLog extends DurableObject {
     let entries = (await this.ctx.storage.get('entries')) || [];
     if (url.pathname === '/append' && request.method === 'POST') {
       entries.unshift(await request.json());
-      entries = entries.slice(0, 40);
+      entries = entries.slice(0, 100);
       await this.ctx.storage.put('entries', entries);
       return json({ ok: true });
     }

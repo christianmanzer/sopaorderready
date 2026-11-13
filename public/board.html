@@ -246,6 +246,25 @@
         }
       }
     }
+
+    // Long names (for example "Christopher") shrink to fit instead of being cut
+    // off with "...". Names share one scale and estimates share another, so each
+    // kind stays the same size across the panel.
+    ['nm', 'est'].forEach(function (cls) {
+      var labels = grid.getElementsByClassName(cls);
+      var fitScale = 1;
+      for (var z = 0; z < labels.length; z++) {
+        var cw2 = labels[z].clientWidth;
+        var sw2 = labels[z].scrollWidth;
+        if (cw2 > 0 && sw2 > cw2) fitScale = Math.min(fitScale, (cw2 / sw2) * 0.98);
+      }
+      if (fitScale < 1) {
+        fitScale = Math.max(fitScale, 0.55);
+        for (var y = 0; y < labels.length; y++) {
+          labels[y].style.fontSize = parseFloat(labels[y].style.fontSize) * fitScale + 'px';
+        }
+      }
+    });
   }
 
   function render() {
