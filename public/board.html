@@ -20,10 +20,14 @@
     --chip-prep: rgba(239, 232, 216, 0.07);
     --chip-prep-ink: #efe8d8;
   }
+  /* Source Serif 4 (SIL Open Font License), served from this Worker so every
+     screen shows the same serif. Georgia / Times are the fallback. */
+  @font-face { font-family: "Source Serif 4"; font-weight: 700; font-style: normal; font-display: swap; src: url("/fonts/source-serif-4-latin-700-normal.woff2") format("woff2"); }
+  @font-face { font-family: "Source Serif 4"; font-weight: 900; font-style: normal; font-display: swap; src: url("/fonts/source-serif-4-latin-900-normal.woff2") format("woff2"); }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); cursor: none; }
   body {
-    font-family: "Roboto Condensed", "Arial Narrow", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: "Source Serif 4", Georgia, "Times New Roman", Times, serif;
     color: var(--prep-ink);
   }
   #app { display: flex; height: 100vh; padding: 2.2vh; }
@@ -195,8 +199,10 @@
       var o = list[i];
       var cell = document.createElement('div');
       cell.className = 'cell';
-      cell.style.flex = '0 0 ' + lay.cw + 'px';
-      cell.style.height = lay.ch + 'px';
+      // Cells are the size of the (capped) tile, so rows pack together instead of
+      // leaving gaps when the cap is limiting.
+      cell.style.flex = '0 0 ' + lay.ew + 'px';
+      cell.style.height = lay.eh + 'px';
       var chip = document.createElement('div');
       chip.className = 'chip';
       chip.style.maxWidth = lay.ew + 'px';
@@ -400,6 +406,8 @@
     $('brand').textContent = cfg.name || '';
     applyTheme(cfg.theme);
     window.addEventListener('resize', render);
+    // The serif loads after the first draw and has different widths, so lay out again once it is ready.
+    try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(render); } catch (e) {}
     document.addEventListener('visibilitychange', function () { if (!document.hidden) keepAwake(); });
     keepAwake();
     if (DEMO) { setPill(); startDemo(); return; }

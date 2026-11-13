@@ -26,7 +26,7 @@ Toast tracks a status on every item in an order (`fulfillmentStatus`):
 | READY | Marked ready on the KDS | Ready for pickup, once nothing is still SENT |
 
 Also: voided orders disappear, dine-in table orders are skipped, a ready number
-stays up for 30 minutes, and an order nobody ever marks ready drops off after 90
+stays up for 30 minutes, and an order nobody ever marks ready drops off after 60
 minutes. Both limits are in `wrangler.toml`.
 
 **Important:** Toast only sets READY when the restaurant uses the Toast kitchen
@@ -127,7 +127,7 @@ every screen without touching them).
 | Setting | What it does |
 |---|---|
 | `READY_MINUTES` | How long a ready number stays up (30) |
-| `PREP_MINUTES` | When a never-bumped order drops off (90) |
+| `PREP_MINUTES` | When a never-bumped order drops off (60) |
 | `APP_VERSION` | Change it and redeploy to reload every open board |
 | `diningOptionGuids` | Only show these dining options |
 | `includeTableOrders` | `true` shows dine-in table orders |
@@ -177,6 +177,15 @@ estimate just shows its number and name.
 `"promised"` or `null`. If it is `null` on real orders, Toast is not sending an
 estimate for them. The prep time comes from the takeout prep time in Toast's
 restaurant settings, so changing it there changes what the board shows.
+
+## Font
+
+The board uses Source Serif 4 (a Times-style serif, SIL Open Font License). The
+two font files are in `public/fonts/` and are served by the Worker itself, so
+every screen shows the same type with no outside requests. If they fail to load,
+the screen falls back to Georgia, then Times New Roman. To change the font,
+replace the two files, update the `@font-face` lines and the `font-family` in
+`public/board.html`.
 
 ## Tile size
 

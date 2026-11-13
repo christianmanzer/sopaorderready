@@ -31,7 +31,7 @@ new_sqlite_classes = ["Board", "EventLog"]
 # Minutes a ready number stays on the screen.
 READY_MINUTES = "30"
 # Minutes before an order that was never marked ready is dropped.
-PREP_MINUTES = "90"
+PREP_MINUTES = "60"
 # Change this number after a deploy and every open board reloads itself.
 APP_VERSION = "1"
 # "enforce" rejects anything without a valid Toast signature.
