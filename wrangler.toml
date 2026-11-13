@@ -50,7 +50,7 @@ SIGNATURE_MODE = "enforce"
 #   theme                optional. Colors, see README.
 [vars.LOCATIONS.sopa]
 name = "SOPA!"
-restaurantGuid = "REPLACE-WITH-TOAST-RESTAURANT-GUID"
+restaurantGuid = "55dc2d61-38be-496d-aa0e-183954171d1f"
 showNames = true
 timezone = "America/Denver"
 
