@@ -215,7 +215,7 @@ export function pruneOrders(orders, nowMs, limits) {
   var readyMs = limits.readyMs || DEFAULTS.readyMs;
   var prepMs = limits.prepMs || DEFAULTS.prepMs;
   var goneMs = limits.goneMs || DEFAULTS.goneMs;
-  var mixedMs = limits.mixedMs || DEFAULTS.mixedMs;
+  var mixedMs = limits.mixedMs != null ? limits.mixedMs : DEFAULTS.mixedMs; // 0 = no wait
   var changed = false;
   var guids = Object.keys(orders);
   for (var i = 0; i < guids.length; i++) {

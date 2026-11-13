@@ -20,7 +20,9 @@ function limitsFor(env) {
     readyMs: (Number(env.READY_MINUTES) || 15) * MINUTE,
     prepMs: (Number(env.PREP_MINUTES) || 90) * MINUTE,
     goneMs: DEFAULTS.goneMs,
-    mixedMs: (Number(env.MIXED_READY_MINUTES) || 3) * MINUTE,
+    // 0 is allowed and means "no wait"; only a missing or invalid value falls back to 3.
+    mixedMs: (env.MIXED_READY_MINUTES !== undefined && env.MIXED_READY_MINUTES !== '' && Number(env.MIXED_READY_MINUTES) >= 0
+      ? Number(env.MIXED_READY_MINUTES) : 3) * MINUTE,
   };
 }
 
