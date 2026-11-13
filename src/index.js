@@ -232,11 +232,11 @@ export default {
             appVersion: String(env.APP_VERSION || '1'),
           });
         }
-        if (m[2] === 'state') return boardStub(env, slug).fetch('https://board/state');
+        if (m[2] === 'state') return boardStub(env, slug).fetch('https://board/state?slug=' + slug);
         if (request.headers.get('Upgrade') !== 'websocket') {
           return new Response('Expected a WebSocket connection', { status: 426 });
         }
-        return boardStub(env, slug).fetch(new Request('https://board/ws', request));
+        return boardStub(env, slug).fetch(new Request('https://board/ws?slug=' + slug, request));
       }
 
       if (path === '/') {
@@ -305,8 +305,22 @@ export class Board extends DurableObject {
     }
   }
 
+  // Remember which location this board is, so the backup check to Toast works
+  // even before the first webhook after a deploy. Open screens ask every few seconds.
+  async rememberLocation(slug) {
+    const loc = getLocation(this.env, slug);
+    if (!loc || !loc.restaurantGuid) return;
+    const meta = await this.ctx.storage.get('meta');
+    if (meta && meta.slug === slug && meta.restaurantGuid === loc.restaurantGuid) return;
+    await this.ctx.storage.put('meta', { slug, restaurantGuid: loc.restaurantGuid });
+    const { orders } = await this.load();
+    await this.scheduleSweep(orders);
+  }
+
   async fetch(request) {
     const url = new URL(request.url);
+    const slugParam = url.searchParams.get('slug');
+    if (slugParam) await this.rememberLocation(slugParam);
 
     if (url.pathname === '/ws') {
       const pair = new WebSocketPair();
