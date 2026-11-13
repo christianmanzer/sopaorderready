@@ -1,0 +1,79 @@
+name = "order-board"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+
+# To serve the boards at boards.primeraagua.com (the domain must be on
+# Cloudflare), uncomment this, or add the custom domain in the Worker's Settings.
+# routes = [{ pattern = "boards.primeraagua.com", custom_domain = true }]
+
+# The board page lives in ./public and is served by the Worker.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+html_handling = "none"
+not_found_handling = "none"
+
+# One Durable Object per board keeps the live order list and the open
+# connections. A second one keeps a short log of recent webhooks for setup.
+[[durable_objects.bindings]]
+name = "BOARD"
+class_name = "Board"
+
+[[durable_objects.bindings]]
+name = "LOG"
+class_name = "EventLog"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Board", "EventLog"]
+
+[vars]
+# Minutes a ready number stays on the screen.
+READY_MINUTES = "15"
+# Minutes before an order that was never marked ready is dropped.
+PREP_MINUTES = "90"
+# Change this number after a deploy and every open board reloads itself.
+APP_VERSION = "1"
+# "enforce" rejects anything without a valid Toast signature.
+# "log-only" is for the very first test only. Switch back to "enforce".
+SIGNATURE_MODE = "enforce"
+
+# Boards. The key is the URL: /sopa/orderready
+#   restaurantGuid       Toast location GUID (see README, step 3)
+#   diningOptionGuids    optional. Only show orders with these dining options
+#                        (for example just Takeout). Leave out to show all
+#                        orders that are not table orders.
+#   includeTableOrders   optional. true shows dine-in table orders too.
+#   showNames            optional. true shows the guest's first name under the number.
+#   timezone             optional. Time zone for the "Updated" time on the screen.
+#                        Default America/Denver.
+#   theme                optional. Colors, see README.
+[vars.LOCATIONS.sopa]
+name = "SOPA!"
+restaurantGuid = "REPLACE-WITH-TOAST-RESTAURANT-GUID"
+showNames = true
+timezone = "America/Denver"
+
+# SOPA! brand: cream #faf6ee, green #80af60, pink #e87a96, text #2e2a26
+[vars.LOCATIONS.sopa.theme]
+background = "#faf6ee"
+ready = "#80af60"
+readyInk = "#2e2a26"
+preparing = "#2e2a26"
+muted = "#566649"
+accent = "#e87a96"
+readyChip = "#e87a96"
+readyChipInk = "#2e2a26"
+preparingChip = "#80af60"
+preparingChipInk = "#2e2a26"
+
+# Another location is another block like the one above, with its own
+# restaurantGuid and colors. Its screen is /<key>/orderready. Example:
+#
+# [vars.LOCATIONS.gardunos]
+# name = "Garduño's"
+# restaurantGuid = "..."
+# showNames = true
+# timezone = "America/Denver"
+# [vars.LOCATIONS.gardunos.theme]
+# background = "#..."

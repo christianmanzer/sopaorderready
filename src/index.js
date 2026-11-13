@@ -1,0 +1,361 @@
+import { DurableObject } from 'cloudflare:workers';
+import { DEFAULTS, summarizeOrder, applyEvent, pruneOrders, visibleOrders } from './logic.js';
+import { verifyToastSignature } from './signature.js';
+
+const MINUTE = 60 * 1000;
+
+function json(obj, status) {
+  return new Response(JSON.stringify(obj), {
+    status: status || 200,
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+  });
+}
+
+function limitsFor(env) {
+  return {
+    readyMs: (Number(env.READY_MINUTES) || 15) * MINUTE,
+    prepMs: (Number(env.PREP_MINUTES) || 90) * MINUTE,
+    goneMs: DEFAULTS.goneMs,
+  };
+}
+
+function getLocation(env, slug) {
+  const all = env.LOCATIONS || {};
+  return Object.prototype.hasOwnProperty.call(all, slug) ? all[slug] : null;
+}
+
+// Theme keys in wrangler.toml -> CSS variables on the board page.
+var THEME_VARS = {
+  background: '--bg', ready: '--ready-bg', readyInk: '--ready-ink', preparing: '--prep-ink',
+  muted: '--prep-dim', accent: '--accent', readyChip: '--chip-ready', readyChipInk: '--chip-ready-ink',
+  preparingChip: '--chip-prep', preparingChipInk: '--chip-prep-ink',
+};
+var COLOR_OK = /^(#[0-9a-fA-F]{3,8}|rgba?\([0-9\s.,%]+\))$/;
+
+function themeCss(theme) {
+  var out = '';
+  Object.keys(THEME_VARS).forEach(function (k) {
+    var v = theme && theme[k];
+    if (typeof v === 'string' && COLOR_OK.test(v.trim())) out += THEME_VARS[k] + ':' + v.trim() + ';';
+  });
+  return out;
+}
+
+// The board page with this location's colors already in it, so the screen
+// never flashes the default colors while it loads.
+async function serveBoard(request, env, url, loc) {
+  const res = await env.ASSETS.fetch(new Request(new URL('/board.html', url), { headers: request.headers }));
+  const css = themeCss(loc.theme);
+  if (!css) return res;
+  return new HTMLRewriter()
+    .on('head', { element(el) { el.append('<style>:root{' + css + '}</style>', { html: true }); } })
+    .transform(res);
+}
+
+function boardStub(env, slug) {
+  return env.BOARD.get(env.BOARD.idFromName(slug));
+}
+
+async function logEvent(env, entry) {
+  try {
+    await env.LOG.get(env.LOG.idFromName('main')).fetch('https://log/append', {
+      method: 'POST',
+      body: JSON.stringify(entry),
+    });
+  } catch (err) {
+    console.error('log failed', err && err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Toast webhook receiver
+// ---------------------------------------------------------------------------
+async function handleWebhook(request, env) {
+  const raw = await request.text();
+  let body;
+  try {
+    body = JSON.parse(raw);
+  } catch (e) {
+    return json({ error: 'invalid json' }, 400);
+  }
+
+  const secrets = String(env.TOAST_WEBHOOK_SECRETS || env.TOAST_WEBHOOK_SECRET || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const sigOk = await verifyToastSignature(
+    secrets,
+    raw,
+    body.timestamp,
+    request.headers.get('Toast-Signature')
+  );
+  const enforce = String(env.SIGNATURE_MODE || 'enforce') !== 'log-only';
+
+  const details = body.details || {};
+  const order = details.order || details;
+  const restaurantGuid =
+    request.headers.get('Toast-Restaurant-External-ID') || details.restaurantGuid || null;
+  const nowIso = new Date().toISOString();
+  const base = {
+    t: nowIso,
+    type: body.eventType || null,
+    restaurant: restaurantGuid,
+    order: order && order.guid ? String(order.guid).slice(0, 8) : null,
+    sigOk,
+  };
+
+  if (!sigOk && enforce) {
+    await logEvent(env, Object.assign(base, { action: 'rejected: ' + (secrets.length ? 'bad signature' : 'no secret set') }));
+    return json({ error: 'invalid signature' }, 401);
+  }
+
+  const type = body.eventType || '';
+  if (type !== 'order_updated' && type !== 'channel_order_updated') {
+    await logEvent(env, Object.assign(base, { action: 'ignored event type' }));
+    return json({ ok: true, ignored: true });
+  }
+
+  const locations = env.LOCATIONS || {};
+  const slugs = Object.keys(locations).filter(
+    (slug) => locations[slug].restaurantGuid && locations[slug].restaurantGuid === restaurantGuid
+  );
+  if (!slugs.length) {
+    await logEvent(env, Object.assign(base, {
+      action: 'no board for this restaurant GUID',
+      number: (order.displayNumber || (order.checks && order.checks[0] && order.checks[0].displayNumber) || null),
+    }));
+    return json({ ok: true, unmapped: true });
+  }
+
+  const nowMs = Date.now();
+  const eventTs = Date.parse(body.timestamp) || nowMs;
+  let failed = false;
+  for (const slug of slugs) {
+    const loc = locations[slug];
+    const result = summarizeOrder(order, {
+      diningOptionGuids: loc.diningOptionGuids || [],
+      includeTableOrders: !!loc.includeTableOrders,
+      showNames: !!loc.showNames,
+      nowMs,
+    });
+    try {
+      await boardStub(env, slug).fetch('https://board/event', {
+        method: 'POST',
+        body: JSON.stringify({ eventGuid: body.guid || null, orderGuid: order.guid, result, ts: eventTs }),
+      });
+    } catch (err) {
+      failed = true;
+      console.error('board update failed', err && err.message);
+    }
+    const counts = {};
+    ((order.checks || [])[0] || { selections: [] }).selections.forEach((s) => {
+      const k = s.fulfillmentStatus || 'NEW';
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    await logEvent(env, Object.assign({}, base, {
+      board: slug,
+      number: result.order ? result.order.number : order.displayNumber || null,
+      action: result.action + ': ' + result.reason,
+      statuses: counts,
+      nameFound: result.nameSource || null,
+      diningOption: (order.diningOption && order.diningOption.guid) || null,
+      tableOrder: !!order.table,
+      source: order.source || null,
+    }));
+  }
+  // A 5xx makes Toast resend later; the board ignores older state on retry.
+  return failed ? json({ error: 'temporary failure' }, 500) : json({ ok: true });
+}
+
+// ---------------------------------------------------------------------------
+// Admin: recent webhook log, used during setup
+// ---------------------------------------------------------------------------
+async function handleAdmin(request, env, url) {
+  if (!env.ADMIN_KEY) return json({ error: 'not found' }, 404);
+  const key = url.searchParams.get('key') || request.headers.get('x-admin-key');
+  if (key !== env.ADMIN_KEY) return json({ error: 'unauthorized' }, 401);
+  return env.LOG.get(env.LOG.idFromName('main')).fetch('https://log/recent');
+}
+
+// ---------------------------------------------------------------------------
+// Worker entry
+// ---------------------------------------------------------------------------
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    try {
+      if (path === '/webhook/toast') {
+        if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+        return await handleWebhook(request, env);
+      }
+      if (path === '/admin/recent') return await handleAdmin(request, env, url);
+
+      // Board page: /sopa/orderready (or the short form /b/sopa)
+      let m = path.match(/^\/([a-z0-9-]+)\/orderready\/?$/) || path.match(/^\/b\/([a-z0-9-]+)\/?$/);
+      if (m) {
+        const loc = getLocation(env, m[1]);
+        if (!loc) return json({ error: 'unknown board' }, 404);
+        return await serveBoard(request, env, url, loc);
+      }
+
+      m = path.match(/^\/api\/b\/([a-z0-9-]+)\/(config|state|ws)$/);
+      if (m) {
+        const slug = m[1];
+        const loc = getLocation(env, slug);
+        if (!loc) return json({ error: 'unknown board' }, 404);
+        if (m[2] === 'config') {
+          return json({
+            name: loc.name || slug,
+            theme: loc.theme || {},
+            showNames: !!loc.showNames,
+            timezone: loc.timezone || 'America/Denver',
+            appVersion: String(env.APP_VERSION || '1'),
+          });
+        }
+        if (m[2] === 'state') return boardStub(env, slug).fetch('https://board/state');
+        if (request.headers.get('Upgrade') !== 'websocket') {
+          return new Response('Expected a WebSocket connection', { status: 426 });
+        }
+        return boardStub(env, slug).fetch(new Request('https://board/ws', request));
+      }
+
+      if (path === '/') {
+        const links = Object.keys(env.LOCATIONS || {})
+          .map((slug) => '/' + slug + '/orderready')
+          .join('\n');
+        return new Response('Order boards:\n' + links + '\n', { headers: { 'content-type': 'text/plain' } });
+      }
+      return env.ASSETS.fetch(request);
+    } catch (err) {
+      console.error('request failed', err && err.stack);
+      return json({ error: 'server error' }, 500);
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Board: one per location. Stores orders, pushes changes to every open screen.
+// Uses hibernating WebSockets, so it costs nothing while the kitchen is quiet.
+// ---------------------------------------------------------------------------
+export class Board extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    // Answers the page's "ping" without waking the object.
+    this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
+  }
+
+  async load() {
+    const stored = await this.ctx.storage.get(['orders', 'seen']);
+    return { orders: stored.get('orders') || {}, seen: stored.get('seen') || [] };
+  }
+
+  async snapshot() {
+    const nowMs = Date.now();
+    const { orders } = await this.load();
+    if (pruneOrders(orders, nowMs, limitsFor(this.env))) {
+      await this.ctx.storage.put('orders', orders);
+    }
+    return {
+      type: 'state',
+      now: nowMs,
+      v: String(this.env.APP_VERSION || '1'),
+      orders: visibleOrders(orders),
+    };
+  }
+
+  async broadcast() {
+    const payload = JSON.stringify(await this.snapshot());
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        ws.send(payload);
+      } catch (e) {
+        /* the socket is closing; the page reconnects on its own */
+      }
+    }
+  }
+
+  async scheduleSweep(orders) {
+    if (!Object.keys(orders).length) return;
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + 30 * 1000);
+    }
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/ws') {
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      this.ctx.acceptWebSocket(server);
+      server.send(JSON.stringify(await this.snapshot()));
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    if (url.pathname === '/state') return json(await this.snapshot());
+
+    if (url.pathname === '/event' && request.method === 'POST') {
+      const evt = await request.json();
+      const { orders, seen } = await this.load();
+      if (evt.eventGuid && seen.indexOf(evt.eventGuid) !== -1) {
+        return json({ ok: true, duplicate: true });
+      }
+      const nowMs = Date.now();
+      let changed = applyEvent(orders, evt.orderGuid, evt.result, evt.ts, nowMs);
+      if (pruneOrders(orders, nowMs, limitsFor(this.env))) changed = true;
+      if (evt.eventGuid) {
+        seen.push(evt.eventGuid);
+        while (seen.length > 200) seen.shift();
+      }
+      await this.ctx.storage.put({ orders, seen });
+      if (changed) await this.broadcast();
+      await this.scheduleSweep(orders);
+      return json({ ok: true, changed });
+    }
+
+    return json({ error: 'not found' }, 404);
+  }
+
+  // Runs every 30 seconds while there is anything to expire.
+  async alarm() {
+    const nowMs = Date.now();
+    const { orders } = await this.load();
+    const changed = pruneOrders(orders, nowMs, limitsFor(this.env));
+    await this.ctx.storage.put('orders', orders);
+    if (changed) await this.broadcast();
+    await this.scheduleSweep(orders);
+  }
+
+  async webSocketMessage(ws, message) {
+    if (message === 'state') ws.send(JSON.stringify(await this.snapshot()));
+  }
+
+  async webSocketClose(ws, code) {
+    try {
+      ws.close(code, 'closing');
+    } catch (e) {
+      /* already closed */
+    }
+  }
+
+  async webSocketError() {}
+}
+
+// ---------------------------------------------------------------------------
+// EventLog: the last 40 webhooks, for checking setup. No guest names stored.
+// ---------------------------------------------------------------------------
+export class EventLog extends DurableObject {
+  async fetch(request) {
+    const url = new URL(request.url);
+    let entries = (await this.ctx.storage.get('entries')) || [];
+    if (url.pathname === '/append' && request.method === 'POST') {
+      entries.unshift(await request.json());
+      entries = entries.slice(0, 40);
+      await this.ctx.storage.put('entries', entries);
+      return json({ ok: true });
+    }
+    if (url.pathname === '/recent') return json({ entries });
+    return json({ error: 'not found' }, 404);
+  }
+}

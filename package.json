@@ -1,0 +1,16 @@
+{
+  "name": "order-board",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Live order ready board driven by Toast webhooks, hosted on Cloudflare Workers",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test",
+    "simulate": "node scripts/send-test-webhook.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

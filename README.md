@@ -1,0 +1,194 @@
+# Order board
+
+A live "Preparing / Ready for pickup" screen for a restaurant TV. Toast sends a
+webhook the moment an order changes, a Cloudflare Worker updates the board, and
+every open screen updates within a fraction of a second.
+
+```
+Toast POS  --webhook-->  Worker (checks signature)  -->  Board object (keeps the orders)
+                                                              |
+                                              live push (WebSocket, polling as backup)
+                                                              |
+                                                        TV browser: /sopa/orderready
+```
+
+Read-only. The board never writes anything back to Toast.
+
+## How the board decides
+
+Toast tracks a status on every item in an order (`fulfillmentStatus`):
+
+| Item status | Meaning | Board |
+|---|---|---|
+| NEW | On the check, not sent to the kitchen | Not shown |
+| HOLD | Paused by staff | Ignored |
+| SENT | Fired, showing on the KDS | Preparing |
+| READY | Marked ready on the KDS | Ready for pickup, once nothing is still SENT |
+
+Also: voided orders disappear, dine-in table orders are skipped, a ready number
+stays up for 15 minutes, and an order nobody ever marks ready drops off after 90
+minutes. Both limits are in `wrangler.toml`.
+
+**Important:** Toast only sets READY when the restaurant uses the Toast kitchen
+display (KDS) and staff bump orders on it. If tickets are never bumped, orders
+stay in Preparing. Step 5 below checks this before you rely on the board.
+
+## Setup
+
+### 1. Deploy
+
+Push this folder to a GitHub repo, then in Cloudflare go to Workers & Pages,
+Create, Import a repository. Or from this folder: `npm install` then
+`npx wrangler deploy`. You get a URL like `https://order-board.<you>.workers.dev`.
+To use your own address (for example `board.fivem.group`), add a custom domain
+to the Worker in its Settings.
+
+### 2. Add the admin key
+
+In the Worker's Settings, Variables and Secrets, add a secret named `ADMIN_KEY`
+with any long random value. It protects the setup log in step 4.
+
+### 3. Create the Toast webhook
+
+In Toast Web: Integrations, Toast API access, Manage webhooks. Create a
+subscription for the **orders** event category and set the endpoint to
+`https://YOUR-WORKER-URL/webhook/toast`. Toast shows a secret key for the
+subscription. Add it to the Worker as a secret named `TOAST_WEBHOOK_SECRET`.
+(Several subscriptions? Use `TOAST_WEBHOOK_SECRETS` with the secrets separated
+by commas.)
+
+### 4. Find the restaurant GUID
+
+Send one test order to the kitchen. Then open
+`https://YOUR-WORKER-URL/admin/recent?key=YOUR_ADMIN_KEY`. The newest entry says
+`no board for this restaurant GUID` and shows the GUID in `restaurant`. Paste it
+into `wrangler.toml` under `[vars.LOCATIONS.sopa]` as `restaurantGuid`, commit,
+and let it redeploy.
+
+If the entry says `rejected: bad signature` instead, see Troubleshooting.
+
+### 5. Verify with a real order
+
+Place a real takeout order, send it, then bump it on the KDS. Refresh the
+`/admin/recent` page. You should see the same order twice: first with
+`"SENT"` in `statuses` and `action: show: preparing`, then `"READY"` and
+`action: show: ready`. If READY never appears, the location is not marking items
+ready in Toast and the board cannot show ready orders. Fix that first.
+
+Check `nameFound` too: it should say `"tab"` on orders where staff typed a name
+(see Names). Look at `diningOption`, `tableOrder` and `source` on your real
+orders as well. If
+dine-in orders or delivery orders show up that should not be on the board, copy
+the Takeout dining option GUID into `diningOptionGuids` for the board:
+
+```toml
+[vars.LOCATIONS.sopa]
+name = "SOPA!"
+restaurantGuid = "..."
+diningOptionGuids = ["takeout-guid-here"]
+```
+
+### 6. Put it on the TV
+
+Open `https://YOUR-WORKER-URL/sopa/orderready` in the TV browser and set it as the home
+page. Turn off the TV and device screensaver and sleep timers. The page
+reconnects by itself, reloads itself every night at 3 AM, and reloads when you
+change `APP_VERSION` in `wrangler.toml` and redeploy (so you can push changes to
+every screen without touching them).
+
+## Preview and testing
+
+- **See the design right now, no setup:** open `public/board.html?demo=1` in any
+  browser. Add `&names=1` to see name labels.
+- **Run it locally:** `npm install`, copy `.dev.vars.example` to `.dev.vars`,
+  `npm run dev`, then open `http://localhost:8787/sopa/orderready`.
+- **Send fake orders:** `npm run simulate -- --status preparing --number 42`.
+  Statuses: `preparing`, `ready`, `mixed`, `unfired`, `voided`, `dine-in`. Use
+  `--order <id>` with the same id to move one order from preparing to ready.
+- **Unit tests:** `npm test`.
+- **Check a screen's connection:** open the board in a desktop browser and run
+  `__boardStatus()` in the console.
+
+## Options (`wrangler.toml`)
+
+| Setting | What it does |
+|---|---|
+| `READY_MINUTES` | How long a ready number stays up (15) |
+| `PREP_MINUTES` | When a never-bumped order drops off (90) |
+| `APP_VERSION` | Change it and redeploy to reload every open board |
+| `diningOptionGuids` | Only show these dining options |
+| `includeTableOrders` | `true` shows dine-in table orders |
+| `showNames` | `true` shows each guest's first name under the number (on for SOPA). See Names |
+| `timezone` | Time zone for the "Updated" time (default `America/Denver`) |
+| `theme` | Colors. Defaults are the SOPA! brand colors (cream `#faf6ee`, green `#80af60`, pink `#e87a96`). Override with, for example, `theme = { ready = "#80af60", background = "#faf6ee" }`. Keys: `background`, `ready`, `readyInk`, `preparing`, `muted`, `accent` (the offline notice), `readyChip`, `readyChipInk`, `preparingChip`, `preparingChipInk` (the order tiles and their text) |
+
+A second board for another location is another `[vars.LOCATIONS.<name>]` block
+with its own `restaurantGuid` and colors (`[vars.LOCATIONS.<name>.theme]`). Its screen is `/<name>/orderready`, for example `boards.primeraagua.com/gardunos/orderready`. One Toast webhook subscription can feed every location: the Worker sends each order to the board whose `restaurantGuid` matches. `/b/<name>` also works as a short form.
+
+To serve the boards at your own address, add `boards.primeraagua.com` as a custom domain on the Worker (the domain must be on Cloudflare), or uncomment the `routes` line near the top of `wrangler.toml`.
+
+## Names
+
+With `showNames = true` the board shows each guest's first name under the
+number. Where the name comes from on a Toast order:
+
+1. **Customer first name**, if Toast includes it. Toast only sends it when the
+   API client has the `guest.pi:read` scope, which also exposes guest personal
+   information. This project does not ask for that scope.
+2. **Tab name on the check** (what staff type at the counter). No extra scope
+   needed. This is what the board uses today.
+
+Names are cleaned before display: first name only, ALL CAPS and lowercase become
+"Maria", at most 14 characters. Anything containing a digit is skipped, so
+delivery-app IDs and phone numbers never show. An order with no usable name just
+shows its number.
+
+**Check it with a real order (step 5):** in `/admin/recent`, `nameFound` says
+`"tab"` when a name was found on the check and `null` when not. If it is `null`
+on orders where staff did type a name, the name is stored somewhere else in your
+Toast setup (for example only on the customer record). Tell me what you see and
+we will decide whether the extra scope is worth it. Set `showNames = false` to
+turn names off.
+
+## Reliability and security
+
+- **Signatures:** every webhook is checked against Toast's `Toast-Signature`
+  header. Anything that fails is rejected and logged. `SIGNATURE_MODE = "log-only"`
+  exists only for first-day troubleshooting. Set it back to `"enforce"`.
+- **Retries and duplicates:** Toast retries failed deliveries after 5 and 10
+  minutes. Duplicate events are ignored, and a late retry carrying older state
+  cannot move an order backwards.
+- **Late edits:** tip adjustments and refunds that touch an order hours later do
+  not bring a finished order back onto the board.
+- **"Updated" time:** the small `Updated 10:42 AM` at the bottom right is the last
+  time that screen heard from the server (a health check about every 15 seconds,
+  or an order change). It uses server time, so a wrong TV clock does not matter.
+  If it stops moving, the screen is frozen or offline. It is replaced by the
+  "Not live" notice after 45 seconds without contact.
+- **Connection loss:** the screen retries with backoff and falls back to
+  polling. After 45 seconds with no contact it shows "Not live. Please ask at the
+  counter." and clears itself when the connection returns.
+- **Privacy:** names are first names only, taken from what staff typed on the
+  check (see Names). No guest personal information is requested from Toast, and
+  the setup log records where a name came from but never the name itself.
+- **Cost:** the board uses hibernating WebSockets, so an idle board costs
+  almost nothing.
+
+## Troubleshooting
+
+| What you see | What to check |
+|---|---|
+| `/admin/recent` is empty | Toast is not reaching the Worker. Check the endpoint URL and that the subscription is active. |
+| `rejected: no secret set` | Add `TOAST_WEBHOOK_SECRET` (step 3). |
+| `rejected: bad signature` | The secret is for a different subscription or environment, or Toast's signing details differ from the docs. Set `SIGNATURE_MODE` to `log-only`, send one order, and read `sigOk` in the log. If it is still false with the right secret, the signature input needs adjusting in `src/signature.js`. |
+| Orders appear but never move to Ready | Items are not reaching READY in Toast (see step 5). |
+| Wrong orders appear | Use `diningOptionGuids` (step 5). |
+| Two screens show the same number | Toast's order numbers restart daily and are not guaranteed unique. Rare inside a 15 minute window. |
+| "Not live" on the TV | The TV lost internet or the Worker is down. The board recovers on its own. |
+
+## Not included yet
+
+- A backup poll of Toast's orders API to catch a webhook that Toast gave up on
+  after its two retries. It needs the Toast API client credentials and is the
+  natural next addition.
+- Sound when an order turns ready (browsers need a tap before they allow audio).

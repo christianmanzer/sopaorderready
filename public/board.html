@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Order board</title>
+<style>
+  :root {
+    /* Neutral defaults. Each board's brand colors come from its theme in
+       wrangler.toml, which the Worker injects into this page. */
+    --bg: #0e2b2e;
+    --ready-bg: #2ec4b6;
+    --ready-ink: #062527;
+    --prep-ink: #efe8d8;
+    --prep-dim: #9db5b3;
+    --accent: #efe8d8;
+    --chip-ready: rgba(6, 37, 39, 0.1);
+    --chip-ready-ink: #062527;
+    --chip-prep: rgba(239, 232, 216, 0.07);
+    --chip-prep-ink: #efe8d8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); cursor: none; }
+  body {
+    font-family: "Roboto Condensed", "Arial Narrow", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: var(--prep-ink);
+  }
+  #app { display: flex; height: 100vh; padding: 2.2vh; }
+
+  .panel { display: flex; flex-direction: column; min-width: 0; }
+  .ready {
+    flex: 0 0 64%;
+    margin-right: 2.2vh;
+    padding: 3.2vh 2.6vw 2.6vh;
+    background: var(--ready-bg);
+    color: var(--ready-ink);
+    border-radius: 2.4vh;
+  }
+  .prep { flex: 1 1 0; padding: 3.2vh 1.4vw 1vh 1vw; }
+
+  .title { margin: 0 0 2vh; font-size: 5vh; line-height: 1.1; font-weight: 700; letter-spacing: 0.01em; }
+  .prep .title { color: var(--prep-dim); }
+
+  .area { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; }
+  .grid { position: absolute; left: 0; top: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; align-content: flex-start; }
+
+  .cell { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0.6vh; min-width: 0; overflow: hidden; }
+  .chip {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    width: 100%; height: 100%; min-width: 0; border-radius: 1.6vh; overflow: hidden;
+  }
+  .ready .chip { background: var(--chip-ready); color: var(--chip-ready-ink); }
+  .prep .chip { background: var(--chip-prep); color: var(--chip-prep-ink); }
+  .num { font-weight: 900; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .nm { font-weight: 700; line-height: 1.1; margin-top: 0.12em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 96%; }
+
+
+  .empty { position: absolute; left: 0; top: 0; margin: 0; font-size: 3.4vh; font-weight: 700; opacity: 0.7; }
+  .more { position: absolute; right: 0; bottom: 0; margin: 0; font-size: 3vh; font-weight: 700; opacity: 0.8; }
+
+  .foot { display: flex; align-items: baseline; justify-content: space-between; margin-top: 1.4vh; }
+  .brand { margin: 0; font-size: 3.4vh; font-weight: 700; color: var(--prep-dim); letter-spacing: 0.02em; }
+  .stamp { margin: 0; font-size: 2.2vh; font-weight: 700; color: var(--prep-dim); opacity: 0.85; white-space: nowrap; }
+
+  .pill {
+    position: fixed; bottom: 2.8vh; right: 3.2vh; padding: 1vh 2vh; border-radius: 99px;
+    background: var(--accent); color: var(--ready-ink); font-size: 2.6vh; font-weight: 700;
+  }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="app">
+  <section class="panel ready">
+    <h1 class="title">Ready for pickup</h1>
+    <div class="area" id="readyArea">
+      <div class="grid" id="readyGrid"></div>
+      <p class="empty" id="readyEmpty">No orders ready yet</p>
+      <p class="more" id="readyMore" hidden></p>
+    </div>
+  </section>
+  <section class="panel prep">
+    <h2 class="title">Preparing</h2>
+    <div class="area" id="prepArea">
+      <div class="grid" id="prepGrid"></div>
+      <p class="empty" id="prepEmpty">No orders in the kitchen</p>
+      <p class="more" id="prepMore" hidden></p>
+    </div>
+    <div class="foot">
+      <p class="brand" id="brand"></p>
+      <p class="stamp" id="stamp"></p>
+    </div>
+  </section>
+</div>
+<div class="pill" id="pill" role="status" hidden>Not live. Please ask at the counter.</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var parts = location.pathname.split('/').filter(Boolean);
+  var SLUG = (parts[0] === 'b' ? parts[1] : parts[0]) || ''; // /sopa/orderready or /b/sopa
+  var params = new URLSearchParams(location.search);
+  var DEMO = params.get('demo') === '1';
+
+  var cfg = { name: '', theme: {}, showNames: params.get('names') === '1', appVersion: null, timezone: '' };
+  var orders = [];
+  var lastGoodAt = Date.now(); // last time we heard from the server
+  var ws = null;
+  var failures = 0;
+  var lastMsgAt = 0;
+  var clockOffset = 0; // server time minus this device's clock, so the stamp is right even if the TV clock is off
+
+  function $(id) { return document.getElementById(id); }
+
+  // ----- layout: pick the column count that gives the biggest numbers ------
+  function bestLayout(W, H, n, maxLen, hasName) {
+    var best = null;
+    for (var c = 1; c <= n; c++) {
+      var r = Math.ceil(n / c);
+      // A few pixels of slack: cells that add up to exactly the panel width
+      // wrap to a new row when the browser rounds the panel width down.
+      var cw = Math.floor((W - 4) / c);
+      var ch = Math.floor((H - 4) / r);
+      var byHeight = ch * (hasName ? 0.52 : 0.68);
+      var byWidth = (cw * 0.9) / (Math.max(maxLen, 2) * 0.58);
+      var fs = Math.min(byHeight, byWidth, H * 0.5);
+      if (!best || fs > best.fs) best = { c: c, r: r, cw: cw, ch: ch, fs: fs };
+    }
+    return best;
+  }
+
+  function renderPanel(kind, list) {
+    var area = $(kind + 'Area');
+    var grid = $(kind + 'Grid');
+    var empty = $(kind + 'Empty');
+    var more = $(kind + 'More');
+    var W = area.clientWidth;
+    var H = area.clientHeight;
+    grid.innerHTML = '';
+    empty.hidden = list.length > 0;
+    more.hidden = true;
+    if (!list.length || !W || !H) return;
+
+    // Show as many orders as fit at a readable size. If some do not fit, take
+    // room away from the grid for a "+N more" line so it never overlaps a number.
+    function fit(height) {
+      var minFont = H * 0.1;
+      var n = list.length;
+      var result;
+      for (;;) {
+        var slice = list.slice(0, n);
+        var named = slice.some(function (o) { return !!o.name; });
+        var len = slice.reduce(function (m, o) { return Math.max(m, String(o.n).length); }, 1);
+        result = bestLayout(W, height, n, len, named);
+        if (result.fs >= minFont || n <= 1) break;
+        n--;
+      }
+      return { n: n, lay: result };
+    }
+    var f = fit(H);
+    if (f.n < list.length) {
+      var reserve = Math.round(window.innerHeight * 0.06);
+      f = fit(H - reserve);
+      grid.style.bottom = reserve + 'px';
+      more.textContent = '+' + (list.length - f.n) + ' more';
+      more.hidden = false;
+    } else {
+      grid.style.bottom = '0px';
+    }
+    var shown = f.n;
+    var lay = f.lay;
+
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < shown; i++) {
+      var o = list[i];
+      var cell = document.createElement('div');
+      cell.className = 'cell';
+      cell.style.flex = '0 0 ' + lay.cw + 'px';
+      cell.style.height = lay.ch + 'px';
+      var chip = document.createElement('div');
+      chip.className = 'chip';
+      var num = document.createElement('span');
+      num.className = 'num';
+      num.style.fontSize = lay.fs + 'px';
+      num.textContent = o.n;
+      chip.appendChild(num);
+      if (o.name) {
+        var nm = document.createElement('span');
+        nm.className = 'nm';
+        nm.style.fontSize = lay.fs * 0.3 + 'px';
+        nm.textContent = o.name;
+        chip.appendChild(nm);
+      }
+      cell.appendChild(chip);
+      frag.appendChild(cell);
+    }
+    grid.appendChild(frag);
+
+    // Digit width differs from font to font (and TV to TV), so measure the real
+    // thing: if the widest number is too wide for its cell, shrink them all.
+    var nums = grid.getElementsByClassName('num');
+    var widest = 0;
+    for (var k = 0; k < nums.length; k++) widest = Math.max(widest, nums[k].scrollWidth);
+    var target = lay.cw * 0.82;
+    if (widest > target) {
+      var scale = target / widest;
+      for (var q = 0; q < nums.length; q++) {
+        nums[q].style.fontSize = lay.fs * scale + 'px';
+        var label = nums[q].nextSibling;
+        if (label) label.style.fontSize = lay.fs * scale * 0.3 + 'px';
+      }
+    }
+  }
+
+  function render() {
+    var ready = orders.filter(function (o) { return o.s === 'ready'; });
+    var prep = orders.filter(function (o) { return o.s === 'preparing'; });
+    ready.sort(function (a, b) { return (b.r || 0) - (a.r || 0); }); // newest first
+    prep.sort(function (a, b) { return (a.o || 0) - (b.o || 0); }); // oldest first
+
+    renderPanel('ready', ready);
+    renderPanel('prep', prep);
+  }
+
+  function apply(msg) {
+    if (cfg.appVersion && msg.v && msg.v !== cfg.appVersion) {
+      location.reload();
+      return;
+    }
+    lastGoodAt = Date.now();
+    if (msg.now) clockOffset = msg.now - Date.now();
+    orders = msg.orders || [];
+    render();
+  }
+
+  // ----- connection: WebSocket, with polling as a fallback ------------------
+  function clockText(ms) {
+    var d = new Date(ms);
+    var opts = { hour: 'numeric', minute: '2-digit' };
+    if (cfg.timezone) opts.timeZone = cfg.timezone;
+    try { return d.toLocaleTimeString('en-US', opts); } catch (e) {
+      try { return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); } catch (e2) { return ''; }
+    }
+  }
+
+  // "Updated 10:42 AM" is the last time this screen heard from the server (a
+  // health check every ~15 s, or a new order change). If it stops moving, the
+  // screen is frozen or offline. Hidden while the "Not live" pill is showing.
+  function setPill() {
+    var offline = !DEMO && Date.now() - lastGoodAt >= 45000;
+    $('pill').hidden = !offline;
+    var st = $('stamp');
+    st.textContent = offline ? '' : 'Updated ' + clockText(lastGoodAt + clockOffset);
+  }
+
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    try {
+      ws = new WebSocket(proto + '//' + location.host + '/api/b/' + SLUG + '/ws');
+    } catch (e) {
+      return retry();
+    }
+    var mine = ws;
+    mine.onopen = function () { failures = 0; lastMsgAt = Date.now(); };
+    mine.onmessage = function (e) {
+      lastMsgAt = Date.now();
+      if (e.data === 'pong') { lastGoodAt = Date.now(); return; }
+      try { var m = JSON.parse(e.data); if (m.type === 'state') apply(m); } catch (err) {}
+    };
+    mine.onclose = function () { if (ws === mine) retry(); };
+    mine.onerror = function () { try { mine.close(); } catch (e) {} };
+  }
+
+  function retry() {
+    ws = null;
+    failures++;
+    setTimeout(connect, Math.min(15000, 1000 * Math.pow(2, Math.min(failures, 4))));
+  }
+
+  function poll() {
+    if (ws && ws.readyState === 1) return;
+    var x = new XMLHttpRequest();
+    x.open('GET', '/api/b/' + SLUG + '/state');
+    x.timeout = 8000;
+    x.onload = function () {
+      if (x.status !== 200) return;
+      try { apply(JSON.parse(x.responseText)); } catch (e) {}
+    };
+    x.send();
+  }
+
+  function heartbeat() {
+    if (!ws) return;
+    if (ws.readyState === 1) {
+      if (Date.now() - lastMsgAt > 40000) { try { ws.close(); } catch (e) {} return; } // went silent
+      try { ws.send('ping'); } catch (e) {}
+    }
+  }
+
+  // ----- demo mode: fake orders so the board can be previewed anywhere ------
+  function startDemo() {
+    var list = [];
+    var next = 41;
+    function add(status, ageSec) {
+      var now = Date.now();
+      list.push({
+        n: String(next++), s: status, name: cfg.showNames ? ['Maria', 'Ben', 'Tomas', 'Priya', 'Sam', 'Lena'][next % 6] : null,
+        o: now - ageSec * 1000, r: status === 'ready' ? now : null
+      });
+    }
+    add('ready', 120); add('ready', 90); add('preparing', 70); add('preparing', 50); add('preparing', 20);
+    function push() { orders = list.slice(); render(); }
+    push();
+    setInterval(function () {
+      var now = Date.now();
+      add('preparing', 0);
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].s === 'preparing' && now - list[i].o > 14000) { list[i].s = 'ready'; list[i].r = now; break; }
+      }
+      list = list.filter(function (o) { return o.s !== 'ready' || now - o.r < 40000; });
+      push();
+    }, 5000);
+  }
+
+  // ----- keep the screen healthy over days of running -----------------------
+  function dailyReload() {
+    var d = new Date();
+    var key = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+    var saved = null;
+    try { saved = sessionStorage.getItem('reloaded'); } catch (e) {}
+    if (d.getHours() === 3 && saved !== key) {
+      try { sessionStorage.setItem('reloaded', key); } catch (e) {}
+      location.reload();
+    }
+  }
+
+  function keepAwake() {
+    try {
+      if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(function () {});
+    } catch (e) {}
+  }
+
+  window.onerror = function () {
+    if (window.__errReload) return;
+    window.__errReload = setTimeout(function () { location.reload(); }, 30000);
+  };
+
+  function applyTheme(theme) {
+    var map = { background: '--bg', ready: '--ready-bg', readyInk: '--ready-ink', preparing: '--prep-ink', muted: '--prep-dim', accent: '--accent', readyChip: '--chip-ready', readyChipInk: '--chip-ready-ink', preparingChip: '--chip-prep', preparingChipInk: '--chip-prep-ink' };
+    Object.keys(map).forEach(function (k) {
+      if (theme && theme[k]) document.documentElement.style.setProperty(map[k], theme[k]);
+    });
+  }
+
+  // Read-only status for troubleshooting (open the board in a desktop browser
+  // and run __boardStatus() in the console).
+  window.__boardStatus = function () {
+    return {
+      lastUpdate: clockText(lastGoodAt + clockOffset),
+      socket: ws ? ws.readyState : null, // 1 = open
+      secondsSinceLastUpdate: Math.round((Date.now() - lastGoodAt) / 1000),
+      reconnectFailures: failures,
+      orders: orders.length
+    };
+  };
+
+  function start() {
+    document.title = (cfg.name || 'Order') + ' order board';
+    $('brand').textContent = cfg.name || '';
+    applyTheme(cfg.theme);
+    window.addEventListener('resize', render);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) keepAwake(); });
+    keepAwake();
+    if (DEMO) { setPill(); startDemo(); return; }
+    connect();
+    setInterval(poll, 5000);
+    setInterval(heartbeat, 15000);
+    setInterval(setPill, 5000);
+    setPill();
+    setInterval(dailyReload, 60000);
+  }
+
+  function loadConfig() {
+    var x = new XMLHttpRequest();
+    x.open('GET', '/api/b/' + SLUG + '/config');
+    x.timeout = 8000;
+    x.onload = function () {
+      if (x.status === 200) {
+        try {
+          var c = JSON.parse(x.responseText);
+          cfg.name = c.name; cfg.theme = c.theme || {}; cfg.appVersion = c.appVersion; cfg.timezone = c.timezone || '';
+          if (c.showNames) cfg.showNames = true;
+        } catch (e) {}
+        start();
+      } else { setTimeout(loadConfig, 5000); }
+    };
+    x.onerror = x.ontimeout = function () { setTimeout(loadConfig, 5000); };
+    x.send();
+  }
+
+  if (DEMO) { cfg.name = 'SOPA!'; start(); } else { loadConfig(); }
+})();
+</script>
+</body>
+</html>
