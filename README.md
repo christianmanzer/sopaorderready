@@ -136,7 +136,7 @@ every screen without touching them).
 |---|---|
 | `READY_MINUTES` | How long a ready number stays up (30) |
 | `PREP_MINUTES` | When a never-bumped order drops off (60) |
-| `MIXED_READY_MINUTES` | An order with some items READY and the rest stuck at SENT (for example a drink that never goes through the KDS) shows as ready after this long (3) |
+| `MIXED_READY_MINUTES` | An order with some items READY and the rest stuck at SENT (for example a drink that never goes through the KDS) shows as ready after this long. SOPA uses 0 (right away) because the kitchen bumps whole tickets only; use 1 to 3 if partial bumps ever happen |
 | `APP_VERSION` | Change it and redeploy to reload every open board |
 | `diningOptionGuids` | Only show these dining options |
 | `includeTableOrders` | `true` shows dine-in table orders |
@@ -201,6 +201,29 @@ replace the two files, update the `@font-face` lines and the `font-family` in
 Tiles are capped at half the panel width and about 40% of its height, so one or
 two orders stay a normal size instead of filling the panel. They fill from the
 top left, and the numbers grow as orders are added until the panel is full.
+
+## Vertical (portrait) screens
+
+Nothing to set. When a screen is taller than it is wide, the board stacks the
+panels: Ready on top, Preparing underneath, footer at the bottom. Wide screens
+look exactly as before. Square screens use the stacked layout. All sizes scale
+from the screen width on tall screens and from the height on wide ones, so a
+vertical TV looks like a horizontal one turned on its side. Tested from 720x1280
+to 1080x1920 and a 768x1024 tablet, including a full rush of 24 ready and 20
+preparing orders.
+
+## Logo
+
+A board can show a logo at the bottom instead of the name as text. Put the
+picture in `public/logos/` (a transparent PNG, about 1200 px wide, or an SVG) and
+add one line to the location in `wrangler.toml`:
+
+    logo = "/logos/sopa.png"
+
+The logo only replaces the name once it has loaded. If the file is missing or
+fails to load, the name shows as text, so the footer is never empty. SOPA!'s
+logo is `public/logos/sopa.png` (trimmed from the original, same brand green and
+pink as the board).
 
 ## Reliability and security
 

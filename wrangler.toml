@@ -53,6 +53,9 @@ SIGNATURE_MODE = "enforce"
 #                        Preparing tiles ("Est. 12:25") when the order has one.
 #   timezone             optional. Time zone for the "Updated" time on the screen.
 #                        Default America/Denver.
+#   logo                 optional. A picture in public/ shown at the bottom instead of the
+#                        name, for example "/logos/sopa.png". If it is missing or fails
+#                        to load, the name is shown as text.
 #   theme                optional. Colors, see README.
 [vars.LOCATIONS.sopa]
 name = "SOPA!"
@@ -60,6 +63,7 @@ restaurantGuid = "55dc2d61-38be-496d-aa0e-183954171d1f"
 showNames = true
 showEstimate = true
 timezone = "America/Denver"
+logo = "/logos/sopa.png"
 
 # SOPA! brand: cream #faf6ee, green #80af60, pink #e87a96, text #2e2a26
 [vars.LOCATIONS.sopa.theme]

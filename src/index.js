@@ -231,6 +231,8 @@ export default {
             showNames: !!loc.showNames,
             showEstimate: !!loc.showEstimate,
             timezone: loc.timezone || 'America/Denver',
+            // A path on this site (for example /logos/sopa.png). Anything else is ignored.
+            logo: typeof loc.logo === 'string' && /^\/[^/]/.test(loc.logo) ? loc.logo : null,
             appVersion: String(env.APP_VERSION || '1'),
           });
         }

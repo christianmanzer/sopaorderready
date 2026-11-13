@@ -252,3 +252,16 @@ test('an order that is all SENT or all READY is never marked mixed', () => {
   assert.equal(summarizeOrder(order(['SENT', 'SENT']), { nowMs: NOW }).order.mixed, false);
   assert.equal(summarizeOrder(order(['READY', 'READY']), { nowMs: NOW }).order.mixed, false);
 });
+
+test('mixedMs of 0 promotes a mixed order to ready immediately', () => {
+  const r = summarizeOrder(order(['READY', 'READY', 'SENT']), { nowMs: NOW });
+  const orders = {};
+  applyEvent(orders, 'o1', r, NOW, NOW);
+  assert.equal(pruneOrders(orders, NOW, { mixedMs: 0 }), true);
+  assert.equal(visibleOrders(orders)[0].s, 'ready');
+  // a plain preparing order (nothing READY yet) is untouched
+  const p = summarizeOrder(order(['SENT', 'SENT']), { nowMs: NOW });
+  applyEvent(orders, 'o2', p, NOW, NOW);
+  pruneOrders(orders, NOW, { mixedMs: 0 });
+  assert.equal(orders.o2.s, 'preparing');
+});

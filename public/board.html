@@ -24,35 +24,38 @@
      screen shows the same serif. Georgia / Times are the fallback. */
   @font-face { font-family: "Source Serif 4"; font-weight: 700; font-style: normal; font-display: swap; src: url("/fonts/source-serif-4-latin-700-normal.woff2") format("woff2"); }
   @font-face { font-family: "Source Serif 4"; font-weight: 900; font-style: normal; font-display: swap; src: url("/fonts/source-serif-4-latin-900-normal.woff2") format("woff2"); }
+  /* One unit of size: 1% of the screen height on a wide screen, 1% of the width on a tall one,
+     so a vertical screen looks the same as a horizontal one, just stacked. */
+  :root { --u: 1vh; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); cursor: none; }
   body {
     font-family: "Source Serif 4", Georgia, "Times New Roman", Times, serif;
     color: var(--prep-ink);
   }
-  #app { display: flex; height: 100vh; padding: 2.2vh; }
+  #app { display: flex; height: 100vh; padding: calc(2.2 * var(--u)); }
 
   .panel { display: flex; flex-direction: column; min-width: 0; }
   .ready {
     flex: 0 0 64%;
-    margin-right: 2.2vh;
-    padding: 3.2vh 2.6vw 2.6vh;
+    margin-right: calc(2.2 * var(--u));
+    padding: calc(3.2 * var(--u)) 2.6vw calc(2.6 * var(--u));
     background: var(--ready-bg);
     color: var(--ready-ink);
-    border-radius: 2.4vh;
+    border-radius: calc(2.4 * var(--u));
   }
-  .prep { flex: 1 1 0; padding: 3.2vh 1.4vw 1vh 1vw; }
+  .prep { flex: 1 1 0; padding: calc(3.2 * var(--u)) 1.4vw calc(1 * var(--u)) 1vw; }
 
-  .title { margin: 0 0 2vh; font-size: 5vh; line-height: 1.1; font-weight: 700; letter-spacing: 0.01em; }
+  .title { margin: 0 0 calc(2 * var(--u)); font-size: calc(5 * var(--u)); line-height: 1.1; font-weight: 700; letter-spacing: 0.01em; }
   .prep .title { color: var(--prep-dim); }
 
   .area { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; }
   .grid { position: absolute; left: 0; top: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; align-content: flex-start; }
 
-  .cell { display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; padding: 0.6vh; min-width: 0; overflow: hidden; }
+  .cell { display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; padding: calc(0.6 * var(--u)); min-width: 0; overflow: hidden; }
   .chip {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    width: 100%; height: 100%; min-width: 0; border-radius: 1.6vh; overflow: hidden;
+    width: 100%; height: 100%; min-width: 0; border-radius: calc(1.6 * var(--u)); overflow: hidden;
   }
   .ready .chip { background: var(--chip-ready); color: var(--chip-ready-ink); }
   .prep .chip { background: var(--chip-prep); color: var(--chip-prep-ink); }
@@ -61,16 +64,28 @@
   .nm { font-weight: 700; line-height: 1.1; margin-top: 0.12em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 96%; }
 
 
-  .empty { position: absolute; left: 0; top: 0; margin: 0; font-size: 3.4vh; font-weight: 700; opacity: 0.7; }
-  .more { position: absolute; right: 0; bottom: 0; margin: 0; font-size: 3vh; font-weight: 700; opacity: 0.8; }
+  .empty { position: absolute; left: 0; top: 0; margin: 0; font-size: calc(3.4 * var(--u)); font-weight: 700; opacity: 0.7; }
+  .more { position: absolute; right: 0; bottom: 0; margin: 0; font-size: calc(3 * var(--u)); font-weight: 700; opacity: 0.8; }
 
-  .foot { display: flex; align-items: baseline; justify-content: space-between; margin-top: 1.4vh; }
-  .brand { margin: 0; font-size: 3.4vh; font-weight: 700; color: var(--prep-dim); letter-spacing: 0.02em; }
-  .stamp { margin: 0; font-size: 2.2vh; font-weight: 700; color: var(--prep-dim); opacity: 0.85; white-space: nowrap; }
+  .foot { display: flex; align-items: baseline; justify-content: space-between; margin-top: calc(1.4 * var(--u)); }
+  .brand { margin: 0; font-size: calc(3.4 * var(--u)); font-weight: 700; color: var(--prep-dim); letter-spacing: 0.02em; }
+  /* The logo replaces the name once it has loaded; until then (or if it fails) the name shows. */
+  .logo { display: block; height: calc(8 * var(--u)); width: auto; max-width: 62%; object-fit: contain; object-position: left center; }
+  .foot.has-logo { align-items: center; }
+  .stamp { margin: 0; font-size: calc(2.2 * var(--u)); font-weight: 700; color: var(--prep-dim); opacity: 0.85; white-space: nowrap; }
 
   .pill {
-    position: fixed; bottom: 2.8vh; right: 3.2vh; padding: 1vh 2vh; border-radius: 99px;
-    background: var(--accent); color: var(--ready-ink); font-size: 2.6vh; font-weight: 700;
+    position: fixed; bottom: calc(2.8 * var(--u)); right: calc(3.2 * var(--u)); padding: calc(1 * var(--u)) calc(2 * var(--u)); border-radius: 99px;
+    background: var(--accent); color: var(--ready-ink); font-size: calc(2.6 * var(--u)); font-weight: 700;
+  }
+
+  /* Tall (portrait) screens: Ready on top, Preparing underneath. */
+  @media (max-aspect-ratio: 1/1) {
+    :root { --u: 1vw; }
+    #app { flex-direction: column; }
+    .panel { min-height: 0; }
+    .ready { flex: 1.35 1 0; margin: 0 0 calc(2.2 * var(--u)); padding: calc(3.2 * var(--u)) calc(2.6 * var(--u)) calc(2.6 * var(--u)); }
+    .prep { flex: 1 1 0; padding: calc(3.2 * var(--u)) calc(2.6 * var(--u)) calc(1 * var(--u)); }
   }
   [hidden] { display: none !important; }
 </style>
@@ -94,6 +109,7 @@
     </div>
     <div class="foot">
       <p class="brand" id="brand"></p>
+      <img class="logo" id="logo" alt="" hidden>
       <p class="stamp" id="stamp"></p>
     </div>
   </section>
@@ -109,7 +125,7 @@
   var params = new URLSearchParams(location.search);
   var DEMO = params.get('demo') === '1';
 
-  var cfg = { name: '', theme: {}, showNames: params.get('names') === '1', showEstimate: params.get('est') === '1', appVersion: null, timezone: '' };
+  var cfg = { name: '', theme: {}, showNames: params.get('names') === '1', showEstimate: params.get('est') === '1', appVersion: null, timezone: '', logo: params.get('logo') || '' };
   var orders = [];
   var lastGoodAt = Date.now(); // last time we heard from the server
   var ws = null;
@@ -176,7 +192,8 @@
     }
     var f = fit(H);
     if (f.n < list.length) {
-      var reserve = Math.round(window.innerHeight * 0.06);
+      var unit = (window.innerWidth <= window.innerHeight ? window.innerWidth : window.innerHeight) / 100; // matches --u
+      var reserve = Math.round(unit * 6);
       f = fit(H - reserve);
       grid.style.bottom = reserve + 'px';
       more.textContent = '+' + (list.length - f.n) + ' more';
@@ -420,10 +437,27 @@
     };
   };
 
+  // Swap the name for the logo only once the picture has really loaded, then lay the
+  // tiles out again because the footer got a little taller.
+  function showLogo() {
+    if (!cfg.logo || !/^\/[^/]/.test(cfg.logo)) return;
+    var img = $('logo');
+    img.alt = cfg.name || '';
+    img.onload = function () {
+      img.hidden = false;
+      $('brand').hidden = true;
+      img.parentNode.className = 'foot has-logo';
+      render();
+    };
+    img.onerror = function () { img.hidden = true; $('brand').hidden = false; };
+    img.src = cfg.logo;
+  }
+
   function start() {
     document.title = (cfg.name || 'Order') + ' order board';
     $('brand').textContent = cfg.name || '';
     applyTheme(cfg.theme);
+    showLogo();
     window.addEventListener('resize', render);
     // The serif loads after the first draw and has different widths, so lay out again once it is ready.
     try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(render); } catch (e) {}
@@ -449,6 +483,7 @@
           cfg.name = c.name; cfg.theme = c.theme || {}; cfg.appVersion = c.appVersion; cfg.timezone = c.timezone || '';
           if (c.showNames) cfg.showNames = true;
           if (c.showEstimate) cfg.showEstimate = true;
+          if (c.logo) cfg.logo = c.logo;
         } catch (e) {}
         start();
       } else { setTimeout(loadConfig, 5000); }
