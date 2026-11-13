@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getToken, fetchOrder, pollingEnabled, toastHost } from '../src/toast.js';
+import { getToken, fetchOrder, pollingEnabled, toastHost, cleanCred, credShape } from '../src/toast.js';
 
 const env = { TOAST_CLIENT_ID: 'id', TOAST_CLIENT_SECRET: 'sec' };
 
@@ -44,4 +44,28 @@ test('fetchOrder sends the restaurant header and handles 404', async () => {
   assert.equal(seen.init.headers.authorization, 'Bearer tok');
   assert.equal(await fetchOrder(env, 't', 'r', 'g', async () => ({ ok: false, status: 404 })), null);
   await assert.rejects(() => fetchOrder(env, 't', 'r', 'g', async () => ({ ok: false, status: 500 })), /toast order 500/);
+});
+
+test('credentials are cleaned of stray spaces, newlines and quotes before login', async () => {
+  assert.equal(cleanCred('  abc\n'), 'abc');
+  assert.equal(cleanCred('"abc"'), 'abc');
+  let sent;
+  const f = async (url, init) => { sent = JSON.parse(init.body); return { ok: true, json: async () => ({ token: { accessToken: 't', expiresIn: 60 } }) }; };
+  await getToken({ TOAST_CLIENT_ID: ' myid\n', TOAST_CLIENT_SECRET: '"mysecret"' }, null, 0, f);
+  assert.equal(sent.clientId, 'myid');
+  assert.equal(sent.clientSecret, 'mysecret');
+});
+
+test('a failed login reports Toast\'s reply and the credential shape, never the secret', async () => {
+  const e = { TOAST_CLIENT_ID: 'abcdefghij', TOAST_CLIENT_SECRET: 'supersecretvalue\n' };
+  const f = async () => ({ ok: false, status: 401, text: async () => '{"message":"Invalid credentials"}' });
+  await assert.rejects(() => getToken(e, null, 0, f), (err) => {
+    assert.match(err.message, /toast login 401/);
+    assert.match(err.message, /Invalid credentials/);
+    assert.match(err.message, /id 10 chars abc…hij/);
+    assert.match(err.message, /secret 16 chars \(had extra spaces/);
+    assert.ok(!err.message.includes('supersecretvalue'));
+    return true;
+  });
+  assert.match(credShape({ TOAST_CLIENT_ID: 'x'.repeat(8), TOAST_CLIENT_SECRET: 'x'.repeat(8) }), /SAME VALUE AS ID/);
 });

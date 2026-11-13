@@ -387,9 +387,22 @@ export class Board extends DurableObject {
       .slice(0, POLL_MAX_PER_RUN);
     if (!due.length) return false;
 
+    // After a failed login, wait 5 minutes before trying again so a bad
+    // credential does not hit Toast every 30 seconds.
+    const failedAt = (await this.ctx.storage.get('toastLoginFailAt')) || 0;
+    if (nowMs - failedAt < 5 * MINUTE) return false;
+
     let changed = false;
     try {
-      const tok = await getToken(this.env, await this.ctx.storage.get('toastToken'), nowMs);
+      const cached = await this.ctx.storage.get('toastToken');
+      let tok;
+      try {
+        tok = await getToken(this.env, cached, nowMs);
+      } catch (loginErr) {
+        await this.ctx.storage.put('toastLoginFailAt', nowMs);
+        throw loginErr;
+      }
+      await this.ctx.storage.delete('toastLoginFailAt');
       await this.ctx.storage.put('toastToken', tok);
       for (const guid of due) {
         const before = orders[guid];
@@ -421,10 +434,14 @@ export class Board extends DurableObject {
       await this.ctx.storage.delete('pollErrAt');
     } catch (err) {
       // Log a failure at most every 10 minutes so the setup log stays readable.
+      // A different message is logged right away.
       const lastErr = (await this.ctx.storage.get('pollErrAt')) || 0;
-      if (nowMs - lastErr > 10 * MINUTE) {
+      const msg = String(err && err.message).slice(0, 320);
+      const lastMsg = await this.ctx.storage.get('pollErrMsg');
+      if (nowMs - lastErr > 10 * MINUTE || msg !== lastMsg) {
         await this.ctx.storage.put('pollErrAt', nowMs);
-        await logEvent(this.env, { t: new Date(nowMs).toISOString(), type: 'poll', board: meta.slug, action: 'poll error: ' + String(err && err.message).slice(0, 120) });
+        await this.ctx.storage.put('pollErrMsg', msg);
+        await logEvent(this.env, { t: new Date(nowMs).toISOString(), type: 'poll', board: meta.slug, action: 'poll error: ' + msg });
       }
     }
     return changed;

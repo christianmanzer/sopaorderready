@@ -11,6 +11,22 @@ export function pollingEnabled(env) {
   return !!(env.TOAST_CLIENT_ID && env.TOAST_CLIENT_SECRET) && String(env.TOAST_POLL || 'on') !== 'off';
 }
 
+// Pasted secrets often carry a trailing newline, spaces or quotes. Strip them.
+export function cleanCred(v) {
+  return String(v == null ? '' : v).trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+}
+
+// Describes the credentials without revealing them, so a bad paste can be spotted.
+export function credShape(env) {
+  var id = String(env.TOAST_CLIENT_ID == null ? '' : env.TOAST_CLIENT_ID);
+  var sec = String(env.TOAST_CLIENT_SECRET == null ? '' : env.TOAST_CLIENT_SECRET);
+  var cid = cleanCred(id);
+  var csec = cleanCred(sec);
+  var odd = function (raw, c) { return raw !== c ? ' (had extra spaces/quotes, removed)' : ''; };
+  return 'id ' + cid.length + ' chars' + (cid ? ' ' + cid.slice(0, 3) + '…' + cid.slice(-3) : '') + odd(id, cid) +
+    ', secret ' + csec.length + ' chars' + odd(sec, csec) + (cid && cid === csec ? ', SAME VALUE AS ID' : '');
+}
+
 // Returns { token, expiresAt }. Pass the cached value back in to reuse it.
 export async function getToken(env, cached, nowMs, fetchFn) {
   fetchFn = fetchFn || fetch;
@@ -19,12 +35,16 @@ export async function getToken(env, cached, nowMs, fetchFn) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      clientId: env.TOAST_CLIENT_ID,
-      clientSecret: env.TOAST_CLIENT_SECRET,
+      clientId: cleanCred(env.TOAST_CLIENT_ID),
+      clientSecret: cleanCred(env.TOAST_CLIENT_SECRET),
       userAccessType: 'TOAST_MACHINE_CLIENT',
     }),
   });
-  if (!res.ok) throw new Error('toast login ' + res.status);
+  if (!res.ok) {
+    var body = '';
+    try { body = res.text ? String(await res.text()).replace(/\s+/g, ' ').slice(0, 160) : ''; } catch (e) { body = ''; }
+    throw new Error('toast login ' + res.status + (body ? ' "' + body + '"' : '') + ' [' + credShape(env) + ']');
+  }
   var data = await res.json();
   var tok = data && data.token;
   if (!tok || !tok.accessToken) throw new Error('toast login: no token');
